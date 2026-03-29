@@ -12,6 +12,7 @@ import {
 } from "@/app/actions/interview";
 import { PHASE_CONFIG, PHASES_ORDER, type InterviewPhase } from "@/data/prompts";
 import type { Situation } from "@/data/situations";
+import { useInterviewStore } from "@/store/interview";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -38,6 +39,7 @@ export default function InterviewChat({
   startPhase: initialPhase = "first",
 }: Props) {
   const router = useRouter();
+  const store = useInterviewStore();
 
   const isFinalEvaluateOnly = initialPhase === "final-evaluate";
   const actualStartPhase: InterviewPhase = isFinalEvaluateOnly ? "final" : initialPhase;
@@ -134,7 +136,7 @@ export default function InterviewChat({
 
     if (questionIndex >= config.questionsCount) {
       setAllMessages((prev) => ({ ...prev, [phase]: updatedMessages }));
-      // 面接官の締めの挨拶を表示してから評価へ
+      store.savePhaseMessages(phase, updatedMessages);
       setState({ status: "closing", phase });
     } else {
       setState({
@@ -237,47 +239,35 @@ export default function InterviewChat({
       setStreamingText("");
       setStreaming(false);
 
-      // LangGraphの条件エッジによる分岐結果で状態遷移
+      // LangGraphの条件エッジによる分岐結果をstoreに保存して結果ページへ
       switch (resultData.outcome) {
-        case "fail": {
-          // 不合格 → 結果ページへ遷移
-          const failParams = new URLSearchParams({
-            evaluation: encodeURIComponent(evalText),
+        case "fail":
+          store.setResult({
             status: "failed",
             phase: PHASE_CONFIG[phase].label,
+            evaluation: evalText,
           });
-          router.push(`/result?${failParams.toString()}`);
+          router.push("/result");
           return;
-        }
-        case "skip_to_ceo": {
-          const ceoParams = new URLSearchParams({
-            evaluation: encodeURIComponent(evalText),
+        case "skip_to_ceo":
+          store.setResult({
             status: "passed",
             phase: PHASE_CONFIG[phase].label,
+            evaluation: evalText,
             nextPhase: "ceo",
-            skipToCeo: "true",
-            type: companyType,
-            size: companySize,
-            situation: encodeURIComponent(JSON.stringify(situation)),
+            skipToCeo: true,
           });
-          router.push(`/result?${ceoParams.toString()}`);
+          router.push("/result");
           return;
-        }
-        default: {
-          const passParams = new URLSearchParams({
-            evaluation: encodeURIComponent(evalText),
+        default:
+          store.setResult({
             status: "passed",
             phase: PHASE_CONFIG[phase].label,
-            type: companyType,
-            size: companySize,
-            situation: encodeURIComponent(JSON.stringify(situation)),
+            evaluation: evalText,
+            nextPhase: resultData.nextPhase,
           });
-          if (resultData.nextPhase) {
-            passParams.set("nextPhase", resultData.nextPhase);
-          }
-          router.push(`/result?${passParams.toString()}`);
+          router.push("/result");
           return;
-        }
       }
     })();
   }, [state, allMessages, messages, companyType, companySize, situation]);
@@ -307,14 +297,14 @@ export default function InterviewChat({
 
       setStreamingText("");
       setStreaming(false);
-      // 結果ページへ遷移
-      const params = new URLSearchParams({
-        evaluation: encodeURIComponent(accumulated),
+      store.setResult({
         status: "complete",
+        phase: "総合",
+        evaluation: accumulated,
       });
-      router.push(`/result?${params.toString()}`);
+      router.push("/result");
     })();
-  }, [state, allMessages, companyType, companySize, situation, router]);
+  }, [state, allMessages, companyType, companySize, situation, router, store]);
 
   // 社長面接の評価
   useEffect(() => {
@@ -343,15 +333,15 @@ export default function InterviewChat({
 
       setStreamingText("");
       setStreaming(false);
-      // 結果ページへ遷移（CEOルート）
-      const params = new URLSearchParams({
-        evaluation: encodeURIComponent(accumulated),
+      store.setResult({
         status: "complete",
-        ceo: "true",
+        phase: "社長面接",
+        evaluation: accumulated,
+        isCeoRoute: true,
       });
-      router.push(`/result?${params.toString()}`);
+      router.push("/result");
     })();
-  }, [state, allMessages, companyType, companySize, situation, router]);
+  }, [state, allMessages, companyType, companySize, situation, router, store]);
 
   const currentPhase =
     state.status === "interviewing" ||

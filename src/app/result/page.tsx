@@ -1,58 +1,45 @@
 "use client";
 
-import { useSearchParams, useRouter } from "next/navigation";
-import { Suspense } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PHASE_CONFIG, type InterviewPhase } from "@/data/prompts";
+import { useInterviewStore } from "@/store/interview";
 
-function ResultContent() {
+export default function ResultPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const {
+    resultStatus,
+    resultPhase,
+    evaluation,
+    nextPhase,
+    skipToCeo,
+    isCeoRoute,
+    setCurrentPhase,
+  } = useInterviewStore();
 
-  const evaluation = decodeURIComponent(searchParams.get("evaluation") ?? "");
-  const status = searchParams.get("status") ?? "complete";
-  const phase = searchParams.get("phase") ?? "";
-  const nextPhase = searchParams.get("nextPhase") as InterviewPhase | null;
-  const skipToCeo = searchParams.get("skipToCeo") === "true";
+  useEffect(() => {
+    if (!resultStatus) {
+      router.replace("/");
+    }
+  }, [resultStatus, router]);
 
-  // 次のフェーズへの遷移用パラメータ
-  const companyType = searchParams.get("type") ?? "";
-  const companySize = searchParams.get("size") ?? "";
-  const situationParam = searchParams.get("situation") ?? "";
+  if (!resultStatus || !evaluation) return null;
 
-  if (!evaluation) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <p className="text-muted-foreground">結果がありません</p>
-      </div>
-    );
-  }
-
-  const isFailed = status === "failed";
-  const isPassed = status === "passed";
-  const isComplete = status === "complete";
-  const isCeoRoute = searchParams.get("ceo") === "true";
+  const isFailed = resultStatus === "failed";
+  const isPassed = resultStatus === "passed";
+  const isComplete = resultStatus === "complete";
 
   const handleNextPhase = () => {
     if (!nextPhase) return;
-    const params = new URLSearchParams({
-      type: companyType,
-      size: companySize,
-      situation: situationParam,
-      startPhase: nextPhase,
-    });
-    router.push(`/interview?${params.toString()}`);
+    setCurrentPhase(nextPhase);
+    router.push("/interview");
   };
 
   const handleFinalEvaluate = () => {
-    const params = new URLSearchParams({
-      type: companyType,
-      size: companySize,
-      situation: situationParam,
-      startPhase: "final-evaluate",
-    });
-    router.push(`/interview?${params.toString()}`);
+    setCurrentPhase("final");
+    router.push("/interview?final=true");
   };
 
   return (
@@ -77,14 +64,14 @@ function ResultContent() {
               : skipToCeo
                 ? "特別選考ルート"
                 : isPassed
-                  ? `${phase} 通過！`
+                  ? `${resultPhase} 通過！`
                   : isCeoRoute
                     ? "特別選考結果"
                     : "最終結果"}
           </h1>
-          {isFailed && phase && (
+          {isFailed && resultPhase && (
             <p className="text-muted-foreground text-sm">
-              {phase}で選考終了となりました
+              {resultPhase}で選考終了となりました
             </p>
           )}
           {isPassed && !skipToCeo && nextPhase && (
@@ -123,7 +110,7 @@ function ResultContent() {
                 : skipToCeo
                   ? "⭐ 特別選考"
                   : isPassed
-                    ? `${phase}の評価`
+                    ? `${resultPhase}の評価`
                     : isCeoRoute
                       ? "⭐ 社長からの総合評価"
                       : "総合評価"}
@@ -150,7 +137,6 @@ function ResultContent() {
 
         {/* アクション */}
         <div className="flex flex-col items-center gap-3 mt-8">
-          {/* 通過 → 次のフェーズへ */}
           {isPassed && nextPhase && (
             <Button
               onClick={handleNextPhase}
@@ -162,7 +148,6 @@ function ResultContent() {
             </Button>
           )}
 
-          {/* 通過（最終面接通過） → 最終評価へ */}
           {isPassed && !nextPhase && (
             <Button
               onClick={handleFinalEvaluate}
@@ -172,7 +157,6 @@ function ResultContent() {
             </Button>
           )}
 
-          {/* 不合格 or 完了 → トップへ */}
           {(isFailed || isComplete) && (
             <Button
               onClick={() => router.push("/")}
@@ -184,19 +168,5 @@ function ResultContent() {
         </div>
       </div>
     </div>
-  );
-}
-
-export default function ResultPage() {
-  return (
-    <Suspense
-      fallback={
-        <div className="flex items-center justify-center min-h-screen">
-          <p className="text-muted-foreground">読み込み中...</p>
-        </div>
-      }
-    >
-      <ResultContent />
-    </Suspense>
   );
 }

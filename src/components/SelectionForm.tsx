@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { useInterviewStore } from "@/store/interview";
 import {
   COMPANY_TYPES,
   type CompanyTypeId,
@@ -22,6 +23,7 @@ const STEPS = ["type", "size", "confirm"] as const;
 
 export default function SelectionForm() {
   const router = useRouter();
+  const { setConfig, reset } = useInterviewStore();
   const [step, setStep] = useState<"type" | "size" | "confirm">("type");
   const [companyType, setCompanyType] = useState<CompanyTypeId | null>(null);
   const [companySize, setCompanySize] = useState<CompanySizeId | null>(null);
@@ -231,12 +233,9 @@ export default function SelectionForm() {
             <Button
               size="lg"
               onClick={() => {
-                const params = new URLSearchParams({
-                  type: companyType!,
-                  size: companySize!,
-                  situation: encodeURIComponent(JSON.stringify(situation)),
-                });
-                router.push(`/interview?${params.toString()}`);
+                reset();
+                setConfig(companyType!, companySize!, situation!);
+                router.push("/interview");
               }}
               className="rounded-full bg-gradient-to-r from-orange-400 via-pink-500 to-violet-500 text-white px-10 py-6 font-bold text-base shadow-lg shadow-pink-200/50 hover:shadow-xl hover:shadow-pink-300/50 hover:-translate-y-0.5 active:translate-y-0 border-none"
             >
