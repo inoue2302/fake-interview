@@ -164,7 +164,7 @@ export default function SelectionForm() {
           </p>
 
           {/* 会社タイプ・規模感 */}
-          <Card className="inline-flex flex-col mb-4">
+          <Card className="inline-flex flex-col mb-6">
             <CardContent className="flex flex-col gap-4 pt-2">
               <div className="flex items-center gap-4">
                 <span className="text-3xl">{selectedType.emoji}</span>
