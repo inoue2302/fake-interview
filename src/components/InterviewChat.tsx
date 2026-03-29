@@ -146,13 +146,10 @@ export default function InterviewChat({
     }
   };
 
-  // 締めの挨拶（固定テキスト）→ 少し待って評価へ
+  // 締めの挨拶（固定テキスト）を表示
   useEffect(() => {
     if (state.status !== "closing") return;
 
-    const { phase } = state;
-
-    // 固定の締め挨拶を表示
     setMessages((prev) => [
       ...prev,
       {
@@ -161,18 +158,18 @@ export default function InterviewChat({
           "本日はお時間いただきありがとうございました。結果は追ってご連絡いたします。",
       },
     ]);
-
-    // 少し間を置いてから評価へ遷移
-    const timer = setTimeout(() => {
-      if (phase === "ceo") {
-        setState({ status: "ceo-evaluating" });
-      } else {
-        setState({ status: "evaluating", phase });
-      }
-    }, 2000);
-
-    return () => clearTimeout(timer);
   }, [state]);
+
+  // 「結果を見る」ボタン押下 → 評価実行
+  const handleViewResult = () => {
+    if (state.status !== "closing") return;
+    const { phase } = state;
+    if (phase === "ceo") {
+      setState({ status: "ceo-evaluating" });
+    } else {
+      setState({ status: "evaluating", phase });
+    }
+  };
 
   // 評価実行（非ストリーミング → 結果ページへ遷移）
   useEffect(() => {
@@ -517,6 +514,29 @@ export default function InterviewChat({
               )}
             </div>
           </form>
+        </div>
+      )}
+
+      {/* 結果を見るボタン */}
+      {state.status === "closing" && (
+        <div className="border-t bg-card px-4 py-4">
+          <Button
+            onClick={handleViewResult}
+            className="w-full rounded-full bg-gradient-to-r from-orange-400 via-pink-500 to-violet-500 text-white py-5 font-bold border-none shadow-lg shadow-pink-200/50"
+          >
+            結果を見る
+          </Button>
+        </div>
+      )}
+
+      {/* 評価中のローディング */}
+      {(state.status === "evaluating" ||
+        state.status === "final-evaluating" ||
+        state.status === "ceo-evaluating") && (
+        <div className="border-t bg-card px-4 py-4 text-center">
+          <p className="text-sm text-muted-foreground animate-pulse">
+            評価中です...
+          </p>
         </div>
       )}
     </div>
