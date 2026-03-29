@@ -1,0 +1,1 @@
+- [feedback_auth_priority.md](feedback_auth_priority.md) - 認証は後回し、UI・機能面を優先する方針
