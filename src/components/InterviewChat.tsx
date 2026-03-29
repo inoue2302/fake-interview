@@ -8,7 +8,6 @@ import {
   evaluate,
   finalEvaluate,
   ceoEvaluate,
-  type EvaluateResult,
 } from "@/app/actions/interview";
 import { PHASE_CONFIG, PHASES_ORDER, type InterviewPhase } from "@/data/prompts";
 import type { Situation } from "@/data/situations";
@@ -198,7 +197,7 @@ export default function InterviewChat({
     })();
   }, [state, allMessages, messages, companyType, companySize, situation]);
 
-  // 評価実行
+  // 評価実行（非ストリーミング → 結果ページへ遷移）
   useEffect(() => {
     if (state.status !== "evaluating") return;
 
@@ -207,9 +206,8 @@ export default function InterviewChat({
 
     (async () => {
       setStreaming(true);
-      setStreamingText("");
 
-      const { text, result } = await evaluate(
+      const resultData = await evaluate(
         phase,
         companyType,
         companySize,
@@ -217,26 +215,6 @@ export default function InterviewChat({
         phaseMessages
       );
 
-      let evalText = "";
-      for await (const chunk of readStreamableValue(text)) {
-        if (chunk) {
-          evalText = chunk;
-          setStreamingText(evalText);
-        }
-      }
-
-      let resultData: EvaluateResult = {
-        passed: false,
-        score: 5,
-        nextPhase: null,
-        skipToCeo: false,
-        outcome: "fail",
-      };
-      for await (const chunk of readStreamableValue(result)) {
-        if (chunk) resultData = chunk;
-      }
-
-      setStreamingText("");
       setStreaming(false);
 
       // LangGraphの条件エッジによる分岐結果をstoreに保存して結果ページへ
@@ -245,68 +223,56 @@ export default function InterviewChat({
           store.setResult({
             status: "failed",
             phase: PHASE_CONFIG[phase].label,
-            evaluation: evalText,
+            evaluation: resultData.evaluation,
           });
-          router.push("/result");
-          return;
+          break;
         case "skip_to_ceo":
           store.setResult({
             status: "passed",
             phase: PHASE_CONFIG[phase].label,
-            evaluation: evalText,
+            evaluation: resultData.evaluation,
             nextPhase: "ceo",
             skipToCeo: true,
           });
-          router.push("/result");
-          return;
+          break;
         default:
           store.setResult({
             status: "passed",
             phase: PHASE_CONFIG[phase].label,
-            evaluation: evalText,
+            evaluation: resultData.evaluation,
             nextPhase: resultData.nextPhase,
           });
-          router.push("/result");
-          return;
+          break;
       }
+      router.push("/result");
     })();
-  }, [state, allMessages, messages, companyType, companySize, situation]);
+  }, [state, allMessages, messages, companyType, companySize, situation, store, router]);
 
-  // 最終評価
+  // 最終評価（非ストリーミング）
   useEffect(() => {
     if (state.status !== "final-evaluating") return;
 
     (async () => {
       setStreaming(true);
-      setStreamingText("");
 
-      const { text } = await finalEvaluate(
+      const evalText = await finalEvaluate(
         companyType,
         companySize,
         situation,
         allMessages
       );
 
-      let accumulated = "";
-      for await (const chunk of readStreamableValue(text)) {
-        if (chunk) {
-          accumulated = chunk;
-          setStreamingText(accumulated);
-        }
-      }
-
-      setStreamingText("");
       setStreaming(false);
       store.setResult({
         status: "complete",
         phase: "総合",
-        evaluation: accumulated,
+        evaluation: evalText,
       });
       router.push("/result");
     })();
   }, [state, allMessages, companyType, companySize, situation, router, store]);
 
-  // 社長面接の評価
+  // 社長面接の評価（非ストリーミング）
   useEffect(() => {
     if (state.status !== "ceo-evaluating") return;
 
@@ -314,29 +280,19 @@ export default function InterviewChat({
 
     (async () => {
       setStreaming(true);
-      setStreamingText("");
 
-      const { text } = await ceoEvaluate(
+      const evalText = await ceoEvaluate(
         companyType,
         companySize,
         situation,
         ceoMessages
       );
 
-      let accumulated = "";
-      for await (const chunk of readStreamableValue(text)) {
-        if (chunk) {
-          accumulated = chunk;
-          setStreamingText(accumulated);
-        }
-      }
-
-      setStreamingText("");
       setStreaming(false);
       store.setResult({
         status: "complete",
         phase: "社長面接",
-        evaluation: accumulated,
+        evaluation: evalText,
         isCeoRoute: true,
       });
       router.push("/result");
