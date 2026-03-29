@@ -11,11 +11,18 @@ import { Card, CardContent } from "@/components/ui/card";
 
 type Message = { role: "user" | "assistant"; content: string };
 
+type PhaseResultData = {
+  evaluation: string;
+  passed: boolean;
+  nextPhase: InterviewPhase | null;
+};
+
 type InterviewState =
   | { status: "interviewing"; phase: InterviewPhase; questionIndex: number }
   | { status: "evaluating"; phase: InterviewPhase }
-  | { status: "phase-result"; phase: InterviewPhase; evaluation: string }
+  | { status: "phase-result"; phase: InterviewPhase; result: PhaseResultData }
   | { status: "final-evaluating" }
+  | { status: "failed"; phase: InterviewPhase; evaluation: string }
   | { status: "complete"; finalEvaluation: string };
 
 type Props = {
@@ -23,21 +30,6 @@ type Props = {
   companySize: string;
   situation: Situation;
 };
-
-/** Server ActionのstreamableValueを読んでコールバックに渡す */
-async function consumeStream(
-  streamValue: Awaited<ReturnType<typeof chat>>["text"],
-  onUpdate: (accumulated: string) => void
-): Promise<string> {
-  let accumulated = "";
-  for await (const chunk of readStreamableValue(streamValue)) {
-    if (chunk) {
-      accumulated = chunk;
-      onUpdate(accumulated);
-    }
-  }
-  return accumulated;
-}
 
 export default function InterviewChat({
   companyType,
@@ -52,11 +44,13 @@ export default function InterviewChat({
   });
   const [messages, setMessages] = useState<Message[]>([]);
   const [allMessages, setAllMessages] = useState<Record<string, Message[]>>({});
+  const [phaseResults, setPhaseResults] = useState<
+    { phase: string; passed: boolean }[]
+  >([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
   const initializedRef = useRef(false);
 
   const scrollToBottom = useCallback(() => {
@@ -75,11 +69,15 @@ export default function InterviewChat({
 
       const { text } = await chat(phase, companyType, companySize, situation, []);
 
-      const finalText = await consumeStream(text, (accumulated) => {
-        setStreamingText(accumulated);
-      });
+      let accumulated = "";
+      for await (const chunk of readStreamableValue(text)) {
+        if (chunk) {
+          accumulated = chunk;
+          setStreamingText(accumulated);
+        }
+      }
 
-      setMessages([{ role: "assistant", content: finalText }]);
+      setMessages([{ role: "assistant", content: accumulated }]);
       setStreamingText("");
       setStreaming(false);
       setState({ status: "interviewing", phase, questionIndex: 1 });
@@ -87,7 +85,6 @@ export default function InterviewChat({
     [companyType, companySize, situation]
   );
 
-  // 初回マウント時に一次面接開始
   useEffect(() => {
     if (!initializedRef.current) {
       initializedRef.current = true;
@@ -116,19 +113,22 @@ export default function InterviewChat({
       newMessages
     );
 
-    const finalText = await consumeStream(text, (accumulated) => {
-      setStreamingText(accumulated);
-    });
+    let accumulated = "";
+    for await (const chunk of readStreamableValue(text)) {
+      if (chunk) {
+        accumulated = chunk;
+        setStreamingText(accumulated);
+      }
+    }
 
     const updatedMessages = [
       ...newMessages,
-      { role: "assistant" as const, content: finalText },
+      { role: "assistant" as const, content: accumulated },
     ];
     setMessages(updatedMessages);
     setStreamingText("");
     setStreaming(false);
 
-    // 最後の質問への回答後 → 評価へ
     if (questionIndex >= config.questionsCount) {
       setAllMessages((prev) => ({ ...prev, [phase]: updatedMessages }));
       setState({ status: "evaluating", phase });
@@ -141,7 +141,7 @@ export default function InterviewChat({
     }
   };
 
-  // 評価実行
+  // 評価実行（LangGraphの条件エッジで合否分岐）
   useEffect(() => {
     if (state.status !== "evaluating") return;
 
@@ -152,34 +152,76 @@ export default function InterviewChat({
       setStreaming(true);
       setStreamingText("");
 
-      const { text } = await evaluate(
+      const { text, result } = await evaluate(
         phase,
         companyType,
         companySize,
         situation,
-        phaseMessages
+        phaseMessages,
+        phaseResults
       );
 
-      const finalText = await consumeStream(text, (accumulated) => {
-        setStreamingText(accumulated);
-      });
+      // ストリーミングで評価テキストを表示
+      let evalText = "";
+      for await (const chunk of readStreamableValue(text)) {
+        if (chunk) {
+          evalText = chunk;
+          setStreamingText(evalText);
+        }
+      }
 
+      // 合否結果を取得
+      let resultData: { passed: boolean; nextPhase: InterviewPhase | null } = {
+        passed: false,
+        nextPhase: null,
+      };
+      for await (const chunk of readStreamableValue(result)) {
+        if (chunk) resultData = chunk;
+      }
+
+      setPhaseResults((prev) => [
+        ...prev,
+        { phase, passed: resultData.passed },
+      ]);
       setStreamingText("");
       setStreaming(false);
-      setState({ status: "phase-result", phase, evaluation: finalText });
+
+      if (!resultData.passed) {
+        // 条件エッジ: 不合格 → fail_end
+        setState({ status: "failed", phase, evaluation: evalText });
+      } else {
+        setState({
+          status: "phase-result",
+          phase,
+          result: {
+            evaluation: evalText,
+            passed: true,
+            nextPhase: resultData.nextPhase,
+          },
+        });
+      }
     })();
-  }, [state, allMessages, messages, companyType, companySize, situation]);
+  }, [
+    state,
+    allMessages,
+    messages,
+    companyType,
+    companySize,
+    situation,
+    phaseResults,
+  ]);
 
   // 次のフェーズへ or 最終評価へ
   const handleNextPhase = () => {
     if (state.status !== "phase-result") return;
 
-    const currentPhaseIndex = PHASES_ORDER.indexOf(state.phase);
-    if (currentPhaseIndex < PHASES_ORDER.length - 1) {
-      const nextPhase = PHASES_ORDER[currentPhaseIndex + 1];
+    const { result } = state;
+    if (result.nextPhase) {
+      // 条件エッジ: 合格 → advance_phase → 次の面接
       setMessages([]);
-      startPhase(nextPhase);
+      startPhase(result.nextPhase);
     } else {
+      // 条件エッジ: 最終面接通過 → final_evaluate
       setState({ status: "final-evaluating" });
     }
   };
@@ -199,13 +241,17 @@ export default function InterviewChat({
         allMessages
       );
 
-      const finalText = await consumeStream(text, (accumulated) => {
-        setStreamingText(accumulated);
-      });
+      let accumulated = "";
+      for await (const chunk of readStreamableValue(text)) {
+        if (chunk) {
+          accumulated = chunk;
+          setStreamingText(accumulated);
+        }
+      }
 
       setStreamingText("");
       setStreaming(false);
-      setState({ status: "complete", finalEvaluation: finalText });
+      setState({ status: "complete", finalEvaluation: accumulated });
     })();
   }, [state, allMessages, companyType, companySize, situation]);
 
@@ -219,11 +265,9 @@ export default function InterviewChat({
   const currentPhase =
     state.status === "interviewing" || state.status === "evaluating"
       ? state.phase
-      : state.status === "phase-result"
+      : state.status === "phase-result" || state.status === "failed"
         ? state.phase
-        : state.status === "final-evaluating" || state.status === "complete"
-          ? "final"
-          : "first";
+        : "final";
 
   const phaseConfig = PHASE_CONFIG[currentPhase];
 
@@ -243,10 +287,19 @@ export default function InterviewChat({
               const idx = PHASES_ORDER.indexOf(currentPhase);
               const pIdx = PHASES_ORDER.indexOf(p);
               const isActive = pIdx <= idx;
+              // 不合格フェーズは赤色に
+              const isFailed =
+                state.status === "failed" && p === state.phase;
               return (
                 <div
                   key={p}
-                  className={`w-8 h-1 rounded-full ${isActive ? "bg-pink-400" : "bg-muted"}`}
+                  className={`w-8 h-1 rounded-full ${
+                    isFailed
+                      ? "bg-red-400"
+                      : isActive
+                        ? "bg-pink-400"
+                        : "bg-muted"
+                  }`}
                 />
               );
             })}
@@ -303,7 +356,8 @@ export default function InterviewChat({
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed bg-card ring-1 ring-foreground/10 rounded-bl-md">
               <div className="text-[10px] font-bold text-muted-foreground mb-1">
-                {state.status === "evaluating" || state.status === "final-evaluating"
+                {state.status === "evaluating" ||
+                state.status === "final-evaluating"
                   ? "評価"
                   : phaseConfig.role}
               </div>
@@ -325,24 +379,50 @@ export default function InterviewChat({
           </div>
         )}
 
-        {/* フェーズ結果 */}
+        {/* フェーズ結果（通過） */}
         {state.status === "phase-result" && (
-          <Card className="bg-gradient-to-r from-orange-50 to-pink-50 dark:from-orange-950/20 dark:to-pink-950/20 mt-4">
+          <Card className="bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-950/20 dark:to-emerald-950/20 mt-4">
             <CardContent className="pt-2">
-              <div className="text-xs font-bold text-pink-500 mb-2">
-                {PHASE_CONFIG[state.phase].label}の評価
+              <div className="text-xs font-bold text-green-600 mb-2">
+                {PHASE_CONFIG[state.phase].label} ― 通過！
               </div>
               <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                {state.evaluation}
+                {state.result.evaluation}
               </div>
               <Button
                 onClick={handleNextPhase}
                 className="mt-4 rounded-full bg-gradient-to-r from-orange-400 via-pink-500 to-violet-500 text-white font-bold border-none"
               >
-                {PHASES_ORDER.indexOf(state.phase) < PHASES_ORDER.length - 1
-                  ? `${PHASE_CONFIG[PHASES_ORDER[PHASES_ORDER.indexOf(state.phase) + 1]].label}へ進む`
+                {state.result.nextPhase
+                  ? `${PHASE_CONFIG[state.result.nextPhase].label}へ進む`
                   : "最終結果を見る"}
               </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* フェーズ結果（不合格） */}
+        {state.status === "failed" && (
+          <Card className="bg-gradient-to-r from-red-50 to-orange-50 dark:from-red-950/20 dark:to-orange-950/20 mt-4">
+            <CardContent className="pt-2">
+              <div className="text-xs font-bold text-red-500 mb-2">
+                {PHASE_CONFIG[state.phase].label} ― 不通過
+              </div>
+              <div className="text-sm whitespace-pre-wrap leading-relaxed">
+                {state.evaluation}
+              </div>
+              <p className="text-xs text-muted-foreground mt-3">
+                残念ながらここで面接終了です。
+              </p>
+              <div className="flex gap-2 mt-4">
+                <Button
+                  onClick={() => router.push("/")}
+                  variant="outline"
+                  className="rounded-full"
+                >
+                  もう一回チャレンジ
+                </Button>
+              </div>
             </CardContent>
           </Card>
         )}
@@ -378,7 +458,6 @@ export default function InterviewChat({
         <div className="border-t bg-card px-4 py-3">
           <div className="flex gap-2">
             <textarea
-              ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
