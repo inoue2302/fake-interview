@@ -1,4 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { streamText } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
 import {
   buildInterviewSystemPrompt,
   buildEvaluationPrompt,
@@ -7,10 +8,7 @@ import {
 } from "@/data/prompts";
 import type { Situation } from "@/data/situations";
 
-const anthropic = new Anthropic();
-
-type MessageRole = "user" | "assistant";
-type Message = { role: MessageRole; content: string };
+type Message = { role: "user" | "assistant"; content: string };
 
 type RequestBody = {
   action: "chat" | "evaluate" | "final-evaluate";
@@ -34,46 +32,21 @@ export async function POST(request: Request) {
       situation
     );
 
-    const stream = anthropic.messages.stream({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 300,
+    const result = streamText({
+      model: anthropic("claude-sonnet-4-20250514"),
       system: systemPrompt,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      maxOutputTokens: 300,
     });
 
-    const encoder = new TextEncoder();
-    const readable = new ReadableStream({
-      async start(controller) {
-        for await (const event of stream) {
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ text: event.delta.text })}\n\n`)
-            );
-          }
-        }
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-        controller.close();
-      },
-    });
-
-    return new Response(readable, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    });
+    return result.toTextStreamResponse();
   }
 
   if (action === "evaluate") {
     const evalPrompt = buildEvaluationPrompt(phase, companyType, situation);
 
-    const stream = anthropic.messages.stream({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 300,
+    const result = streamText({
+      model: anthropic("claude-sonnet-4-20250514"),
       system: evalPrompt,
       messages: [
         {
@@ -81,33 +54,10 @@ export async function POST(request: Request) {
           content: `以下が面接のやり取りです:\n\n${messages.map((m) => `${m.role === "assistant" ? "面接官" : "候補者"}: ${m.content}`).join("\n\n")}\n\n評価コメントをお願いします。`,
         },
       ],
+      maxOutputTokens: 300,
     });
 
-    const encoder = new TextEncoder();
-    const readable = new ReadableStream({
-      async start(controller) {
-        for await (const event of stream) {
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ text: event.delta.text })}\n\n`)
-            );
-          }
-        }
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-        controller.close();
-      },
-    });
-
-    return new Response(readable, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    });
+    return result.toTextStreamResponse();
   }
 
   if (action === "final-evaluate") {
@@ -123,9 +73,8 @@ export async function POST(request: Request) {
       })
       .join("\n\n---\n\n");
 
-    const stream = anthropic.messages.stream({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 500,
+    const result = streamText({
+      model: anthropic("claude-sonnet-4-20250514"),
       system: finalPrompt,
       messages: [
         {
@@ -133,33 +82,10 @@ export async function POST(request: Request) {
           content: `以下が全面接のやり取りです:\n\n${allConversation}\n\n総合評価をお願いします。`,
         },
       ],
+      maxOutputTokens: 500,
     });
 
-    const encoder = new TextEncoder();
-    const readable = new ReadableStream({
-      async start(controller) {
-        for await (const event of stream) {
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ text: event.delta.text })}\n\n`)
-            );
-          }
-        }
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-        controller.close();
-      },
-    });
-
-    return new Response(readable, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    });
+    return result.toTextStreamResponse();
   }
 
   return Response.json({ error: "Invalid action" }, { status: 400 });

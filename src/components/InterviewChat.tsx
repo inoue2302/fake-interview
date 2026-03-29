@@ -22,7 +22,8 @@ type Props = {
   situation: Situation;
 };
 
-async function streamChat(
+/** AI SDKのText Stream形式を読み取る */
+async function streamFromAPI(
   body: Record<string, unknown>,
   onChunk: (text: string) => void,
   onDone: () => void
@@ -37,31 +38,12 @@ async function streamChat(
   if (!reader) return;
 
   const decoder = new TextDecoder();
-  let buffer = "";
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-
-    for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        const data = line.slice(6);
-        if (data === "[DONE]") {
-          onDone();
-          return;
-        }
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.text) onChunk(parsed.text);
-        } catch {
-          // skip
-        }
-      }
-    }
+    const text = decoder.decode(value, { stream: true });
+    if (text) onChunk(text);
   }
   onDone();
 }
@@ -101,7 +83,7 @@ export default function InterviewChat({
       setStreamingText("");
       let accumulated = "";
 
-      streamChat(
+      streamFromAPI(
         {
           action: "chat",
           phase,
@@ -150,11 +132,11 @@ export default function InterviewChat({
     const { phase, questionIndex } = state;
     const config = PHASE_CONFIG[phase];
 
+    let accumulated = "";
+
     // 最後の質問への回答後 → 評価へ
     if (questionIndex >= config.questionsCount) {
-      // 面接官の最後のリアクション
-      let accumulated = "";
-      await streamChat(
+      streamFromAPI(
         {
           action: "chat",
           phase,
@@ -175,11 +157,7 @@ export default function InterviewChat({
           setMessages(finalMessages);
           setStreamingText("");
           setStreaming(false);
-
-          // このフェーズの会話を保存
           setAllMessages((prev) => ({ ...prev, [phase]: finalMessages }));
-
-          // 評価開始
           setState({ status: "evaluating", phase });
         }
       );
@@ -187,8 +165,7 @@ export default function InterviewChat({
     }
 
     // 通常の質問続行
-    let accumulated = "";
-    await streamChat(
+    streamFromAPI(
       {
         action: "chat",
         phase,
@@ -227,7 +204,7 @@ export default function InterviewChat({
     setStreamingText("");
     let accumulated = "";
 
-    streamChat(
+    streamFromAPI(
       {
         action: "evaluate",
         phase,
@@ -258,7 +235,6 @@ export default function InterviewChat({
       setMessages([]);
       startPhase(nextPhase);
     } else {
-      // 最終評価
       setState({ status: "final-evaluating" });
     }
   };
@@ -271,7 +247,7 @@ export default function InterviewChat({
     setStreamingText("");
     let accumulated = "";
 
-    streamChat(
+    streamFromAPI(
       {
         action: "final-evaluate",
         phase: "final",
@@ -396,7 +372,7 @@ export default function InterviewChat({
           </div>
         )}
 
-        {/* ストリーミング中のインジケーター */}
+        {/* タイピングインジケーター */}
         {streaming && !streamingText && (
           <div className="flex justify-start">
             <div className="rounded-2xl px-4 py-2.5 bg-card ring-1 ring-foreground/10 rounded-bl-md">
