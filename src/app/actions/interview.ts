@@ -1,6 +1,6 @@
 "use server";
 
-import { streamText } from "ai";
+import { streamText, generateText } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { createStreamableValue } from "@ai-sdk/rsc";
 import {
@@ -70,11 +70,12 @@ export type EvaluateResult = {
   nextPhase: InterviewPhase | null;
   skipToCeo: boolean;
   outcome: "advance" | "skip_to_ceo" | "final_evaluate" | "ceo_complete" | "fail";
+  evaluation: string;
 };
 
 /**
- * フェーズ評価をストリーミング生成し、
- * LangGraphのグラフを実行して条件エッジで次の行き先を判定する。
+ * フェーズ評価を一括生成し、LangGraphで条件エッジ判定。
+ * ストリーミング不要（結果ページに遷移するだけなので）。
  */
 export async function evaluate(
   phase: InterviewPhase,
@@ -82,106 +83,71 @@ export async function evaluate(
   companySize: string,
   situation: Situation,
   messages: Message[]
-) {
+): Promise<EvaluateResult> {
   const evalPrompt = buildEvaluationPrompt(phase, companyType, situation);
 
-  const stream = createStreamableValue("");
-  const resultPromise = createStreamableValue<EvaluateResult | null>(null);
+  const { text: evalText } = await generateText({
+    model: anthropic("claude-sonnet-4-6"),
+    system: evalPrompt,
+    messages: [
+      {
+        role: "user",
+        content: `以下が面接のやり取りです:\n\n${messages.map((m) => `${m.role === "assistant" ? "面接官" : "候補者"}: ${m.content}`).join("\n\n")}\n\n評価コメントをお願いします。`,
+      },
+    ],
+    maxOutputTokens: 300,
+  });
 
-  (async () => {
-    try {
-      let fullText = "";
-      const { textStream } = streamText({
-        model: anthropic("claude-sonnet-4-6"),
-        system: evalPrompt,
-        messages: [
-          {
-            role: "user",
-            content: `以下が面接のやり取りです:\n\n${messages.map((m) => `${m.role === "assistant" ? "面接官" : "候補者"}: ${m.content}`).join("\n\n")}\n\n評価コメントをお願いします。`,
-          },
-        ],
-        maxOutputTokens: 300,
-      });
+  // LangGraphのグラフを実行して条件エッジで分岐判定
+  const graphResult: InterviewGraphOutput = await interviewGraph.invoke({
+    companyType,
+    companySize,
+    situation,
+    currentPhase: phase,
+    evaluationText: evalText,
+  });
 
-      for await (const chunk of textStream) {
-        fullText += chunk;
-        stream.append(chunk);
-      }
-
-      // LangGraphのグラフを実行して条件エッジで分岐判定
-      const graphResult: InterviewGraphOutput = await interviewGraph.invoke({
-        companyType,
-        companySize,
-        situation,
-        currentPhase: phase,
-        evaluationText: fullText,
-      });
-
-      stream.done();
-      resultPromise.update({
-        passed: graphResult.passed,
-        score: graphResult.score,
-        nextPhase: graphResult.nextPhase,
-        skipToCeo: graphResult.skipToCeo,
-        outcome: graphResult.outcome,
-      });
-      resultPromise.done();
-    } catch (e) {
-      stream.error(e instanceof Error ? e : new Error("Stream failed"));
-      resultPromise.error(
-        e instanceof Error ? e : new Error("Evaluation failed")
-      );
-    }
-  })();
-
-  return { text: stream.value, result: resultPromise.value };
+  return {
+    passed: graphResult.passed,
+    score: graphResult.score,
+    nextPhase: graphResult.nextPhase,
+    skipToCeo: graphResult.skipToCeo,
+    outcome: graphResult.outcome,
+    evaluation: evalText,
+  };
 }
 
-/** 社長面接の評価をストリーミング生成 → LangGraphで判定 */
+/** 社長面接の評価を一括生成 */
 export async function ceoEvaluate(
   companyType: string,
   companySize: string,
   situation: Situation,
   ceoMessages: Message[]
-) {
+): Promise<string> {
   const ceoPrompt = buildCeoEvaluationPrompt(companyType, situation);
 
-  const stream = createStreamableValue("");
+  const { text } = await generateText({
+    model: anthropic("claude-sonnet-4-6"),
+    system: ceoPrompt,
+    messages: [
+      {
+        role: "user",
+        content: `以下が社長面接のやり取りです:\n\n${ceoMessages.map((m) => `${m.role === "assistant" ? "社長" : "候補者"}: ${m.content}`).join("\n\n")}\n\n評価をお願いします。`,
+      },
+    ],
+    maxOutputTokens: 500,
+  });
 
-  (async () => {
-    try {
-      const { textStream } = streamText({
-        model: anthropic("claude-sonnet-4-6"),
-        system: ceoPrompt,
-        messages: [
-          {
-            role: "user",
-            content: `以下が社長面接のやり取りです:\n\n${ceoMessages.map((m) => `${m.role === "assistant" ? "社長" : "候補者"}: ${m.content}`).join("\n\n")}\n\n評価をお願いします。`,
-          },
-        ],
-        maxOutputTokens: 500,
-      });
-
-      for await (const chunk of textStream) {
-        stream.append(chunk);
-      }
-
-      stream.done();
-    } catch (e) {
-      stream.error(e instanceof Error ? e : new Error("Stream failed"));
-    }
-  })();
-
-  return { text: stream.value };
+  return text;
 }
 
-/** 最終評価をストリーミング生成 */
+/** 最終評価を一括生成 */
 export async function finalEvaluate(
   companyType: string,
   companySize: string,
   situation: Situation,
   allMessages: Record<string, Message[]>
-) {
+): Promise<string> {
   const finalPrompt = buildFinalEvaluationPrompt(companyType, situation);
 
   const phases = Object.keys(allMessages);
@@ -193,31 +159,17 @@ export async function finalEvaluate(
     })
     .join("\n\n---\n\n");
 
-  const stream = createStreamableValue("");
+  const { text } = await generateText({
+    model: anthropic("claude-sonnet-4-6"),
+    system: finalPrompt,
+    messages: [
+      {
+        role: "user",
+        content: `以下が全面接のやり取りです:\n\n${allConversation}\n\n総合評価をお願いします。`,
+      },
+    ],
+    maxOutputTokens: 500,
+  });
 
-  (async () => {
-    try {
-      const { textStream } = streamText({
-        model: anthropic("claude-sonnet-4-6"),
-        system: finalPrompt,
-        messages: [
-          {
-            role: "user",
-            content: `以下が全面接のやり取りです:\n\n${allConversation}\n\n総合評価をお願いします。`,
-          },
-        ],
-        maxOutputTokens: 500,
-      });
-
-      for await (const chunk of textStream) {
-        stream.append(chunk);
-      }
-
-      stream.done();
-    } catch (e) {
-      stream.error(e instanceof Error ? e : new Error("Stream failed"));
-    }
-  })();
-
-  return { text: stream.value };
+  return text;
 }

@@ -3,53 +3,38 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { readStreamableValue } from "@ai-sdk/rsc";
-import {
-  chat,
-  evaluate,
-  finalEvaluate,
-  ceoEvaluate,
-  type EvaluateResult,
-} from "@/app/actions/interview";
+import { chat } from "@/app/actions/interview";
 import { PHASE_CONFIG, PHASES_ORDER, type InterviewPhase } from "@/data/prompts";
 import type { Situation } from "@/data/situations";
+import { useInterviewStore } from "@/store/interview";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
 type Message = { role: "user" | "assistant"; content: string };
 
-type PhaseResultData = {
-  evaluation: string;
-  passed: boolean;
-  score: number;
-  nextPhase: InterviewPhase | null;
-  skipToCeo: boolean;
-};
-
 type InterviewState =
   | { status: "interviewing"; phase: InterviewPhase; questionIndex: number }
-  | { status: "evaluating"; phase: InterviewPhase }
-  | { status: "phase-result"; phase: InterviewPhase; result: PhaseResultData }
-  | { status: "ceo-skip-announcement"; fromPhase: InterviewPhase; score: number; evaluation: string }
-  | { status: "final-evaluating" }
-  | { status: "ceo-evaluating" }
-  | { status: "failed"; phase: InterviewPhase; evaluation: string }
-  | { status: "complete"; finalEvaluation: string; isCeoRoute: boolean };
+  | { status: "closing"; phase: InterviewPhase };
 
 type Props = {
   companyType: string;
   companySize: string;
   situation: Situation;
+  startPhase?: InterviewPhase | "final-evaluate";
 };
 
 export default function InterviewChat({
   companyType,
   companySize,
   situation,
+  startPhase: initialPhase = "first",
 }: Props) {
   const router = useRouter();
+  const store = useInterviewStore();
+
   const [state, setState] = useState<InterviewState>({
     status: "interviewing",
-    phase: "first",
+    phase: initialPhase === "final-evaluate" ? "final" : initialPhase,
     questionIndex: 0,
   });
   const [messages, setMessages] = useState<Message[]>([]);
@@ -59,6 +44,7 @@ export default function InterviewChat({
   const [streamingText, setStreamingText] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
+  const closingRef = useRef(false);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -68,7 +54,7 @@ export default function InterviewChat({
     scrollToBottom();
   }, [messages, streamingText, scrollToBottom]);
 
-  const startPhase = useCallback(
+  const startPhaseHandler = useCallback(
     async (phase: InterviewPhase) => {
       setStreaming(true);
       setStreamingText("");
@@ -94,9 +80,10 @@ export default function InterviewChat({
   useEffect(() => {
     if (!initializedRef.current) {
       initializedRef.current = true;
-      startPhase("first");
+      const phase = initialPhase === "final-evaluate" ? "final" as InterviewPhase : initialPhase;
+      startPhaseHandler(phase);
     }
-  }, [startPhase]);
+  }, [startPhaseHandler, initialPhase]);
 
   const handleSend = async () => {
     if (!input.trim() || streaming || state.status !== "interviewing") return;
@@ -111,38 +98,39 @@ export default function InterviewChat({
     const { phase, questionIndex } = state;
     const config = PHASE_CONFIG[phase];
 
-    const { text } = await chat(
-      phase,
-      companyType,
-      companySize,
-      situation,
-      newMessages
-    );
+    const isLastAnswer = questionIndex >= config.questionsCount;
 
-    let accumulated = "";
-    for await (const chunk of readStreamableValue(text)) {
-      if (chunk) {
-        accumulated = chunk;
-        setStreamingText(accumulated);
-      }
-    }
-
-    const updatedMessages = [
-      ...newMessages,
-      { role: "assistant" as const, content: accumulated },
-    ];
-    setMessages(updatedMessages);
-    setStreamingText("");
-    setStreaming(false);
-
-    if (questionIndex >= config.questionsCount) {
-      setAllMessages((prev) => ({ ...prev, [phase]: updatedMessages }));
-      if (phase === "ceo") {
-        setState({ status: "ceo-evaluating" });
-      } else {
-        setState({ status: "evaluating", phase });
-      }
+    if (isLastAnswer) {
+      // 最後の回答 → LLMを呼ばず直接closingへ
+      setStreaming(false);
+      setAllMessages((prev) => ({ ...prev, [phase]: newMessages }));
+      store.savePhaseMessages(phase, newMessages);
+      setState({ status: "closing", phase });
     } else {
+      // 通常の質問続行
+      const { text } = await chat(
+        phase,
+        companyType,
+        companySize,
+        situation,
+        newMessages
+      );
+
+      let accumulated = "";
+      for await (const chunk of readStreamableValue(text)) {
+        if (chunk) {
+          accumulated = chunk;
+          setStreamingText(accumulated);
+        }
+      }
+
+      const updatedMessages = [
+        ...newMessages,
+        { role: "assistant" as const, content: accumulated },
+      ];
+      setMessages(updatedMessages);
+      setStreamingText("");
+      setStreaming(false);
       setState({
         status: "interviewing",
         phase,
@@ -151,223 +139,120 @@ export default function InterviewChat({
     }
   };
 
-  // 評価実行
+  // 締めの挨拶（固定テキスト）を表示
   useEffect(() => {
-    if (state.status !== "evaluating") return;
+    if (state.status !== "closing") return;
+    if (closingRef.current) return;
+    closingRef.current = true;
 
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content:
+          "なるほど、そうなんですね。よくわかりました。\n本日はお時間いただきありがとうございました。結果は追ってご連絡いたします。",
+      },
+    ]);
+  }, [state]);
+
+  // 「結果を見る」ボタン押下 → 結果ページに遷移して評価実行
+  const handleViewResult = () => {
+    if (state.status !== "closing") return;
     const { phase } = state;
-    const phaseMessages = allMessages[phase] ?? messages;
-
-    (async () => {
-      setStreaming(true);
-      setStreamingText("");
-
-      const { text, result } = await evaluate(
-        phase,
-        companyType,
-        companySize,
-        situation,
-        phaseMessages
-      );
-
-      let evalText = "";
-      for await (const chunk of readStreamableValue(text)) {
-        if (chunk) {
-          evalText = chunk;
-          setStreamingText(evalText);
-        }
-      }
-
-      let resultData: EvaluateResult = {
-        passed: false,
-        score: 5,
-        nextPhase: null,
-        skipToCeo: false,
-        outcome: "fail",
-      };
-      for await (const chunk of readStreamableValue(result)) {
-        if (chunk) resultData = chunk;
-      }
-
-      setStreamingText("");
-      setStreaming(false);
-
-      // LangGraphの条件エッジによる分岐結果で状態遷移
-      switch (resultData.outcome) {
-        case "fail":
-          setState({ status: "failed", phase, evaluation: evalText });
-          break;
-        case "skip_to_ceo":
-          setState({
-            status: "ceo-skip-announcement",
-            fromPhase: phase,
-            score: resultData.score,
-            evaluation: evalText,
-          });
-          break;
-        default:
-          setState({
-            status: "phase-result",
-            phase,
-            result: {
-              evaluation: evalText,
-              passed: true,
-              score: resultData.score,
-              nextPhase: resultData.nextPhase,
-              skipToCeo: resultData.skipToCeo,
-            },
-          });
-          break;
-      }
-    })();
-  }, [state, allMessages, messages, companyType, companySize, situation]);
-
-  const handleNextPhase = () => {
-    if (state.status !== "phase-result") return;
-
-    const { result } = state;
-    if (result.nextPhase) {
-      setMessages([]);
-      startPhase(result.nextPhase);
-    } else {
-      setState({ status: "final-evaluating" });
-    }
+    // 結果ページで評価を実行するためにフェーズ情報をstoreに保存
+    store.setResult({
+      status: "evaluating" as "passed",
+      phase: PHASE_CONFIG[phase].label,
+      evaluation: "",
+    });
+    router.push("/result");
   };
-
-  // 社長面接へスキップ
-  const handleSkipToCeo = () => {
-    setMessages([]);
-    startPhase("ceo");
-  };
-
-  // 最終評価
-  useEffect(() => {
-    if (state.status !== "final-evaluating") return;
-
-    (async () => {
-      setStreaming(true);
-      setStreamingText("");
-
-      const { text } = await finalEvaluate(
-        companyType,
-        companySize,
-        situation,
-        allMessages
-      );
-
-      let accumulated = "";
-      for await (const chunk of readStreamableValue(text)) {
-        if (chunk) {
-          accumulated = chunk;
-          setStreamingText(accumulated);
-        }
-      }
-
-      setStreamingText("");
-      setStreaming(false);
-      setState({ status: "complete", finalEvaluation: accumulated, isCeoRoute: false });
-    })();
-  }, [state, allMessages, companyType, companySize, situation]);
-
-  // 社長面接の評価
-  useEffect(() => {
-    if (state.status !== "ceo-evaluating") return;
-
-    const ceoMessages = allMessages["ceo"] ?? [];
-
-    (async () => {
-      setStreaming(true);
-      setStreamingText("");
-
-      const { text } = await ceoEvaluate(
-        companyType,
-        companySize,
-        situation,
-        ceoMessages
-      );
-
-      let accumulated = "";
-      for await (const chunk of readStreamableValue(text)) {
-        if (chunk) {
-          accumulated = chunk;
-          setStreamingText(accumulated);
-        }
-      }
-
-      setStreamingText("");
-      setStreaming(false);
-      setState({ status: "complete", finalEvaluation: accumulated, isCeoRoute: true });
-    })();
-  }, [state, allMessages, companyType, companySize, situation]);
 
   const currentPhase =
-    state.status === "interviewing" || state.status === "evaluating"
+    state.status === "interviewing" || state.status === "closing"
       ? state.phase
-      : state.status === "phase-result" || state.status === "failed"
-        ? state.phase
-        : state.status === "ceo-skip-announcement"
-          ? state.fromPhase
-          : "final";
+      : "final";
 
   const phaseConfig = PHASE_CONFIG[currentPhase];
 
   // 社長面接中かどうか
   const isInCeoInterview =
     state.status === "interviewing" && state.phase === "ceo";
-  const isCeoEval = state.status === "ceo-evaluating";
+  const isCeoEval = false;
 
   return (
     <div className="flex flex-col h-screen max-w-3xl mx-auto">
       {/* ヘッダー */}
       <header className="border-b bg-card px-4 py-3">
-        <div className="flex items-center justify-between">
-          <div>
-            {isInCeoInterview || isCeoEval ? (
-              <>
-                <h1 className="font-bold text-lg">
-                  ⭐ {PHASE_CONFIG.ceo.label}
-                </h1>
-                <p className="text-xs text-muted-foreground">
-                  {PHASE_CONFIG.ceo.subtitle} ― {PHASE_CONFIG.ceo.role}
-                </p>
-              </>
-            ) : (
-              <>
-                <h1 className="font-bold text-lg">{phaseConfig.label}</h1>
-                <p className="text-xs text-muted-foreground">
-                  {phaseConfig.subtitle} ― {phaseConfig.role}
-                </p>
-              </>
-            )}
-          </div>
-          <div className="flex gap-1">
-            {PHASES_ORDER.map((p) => {
-              const idx = PHASES_ORDER.indexOf(currentPhase);
-              const pIdx = PHASES_ORDER.indexOf(p);
-              const isActive = pIdx <= idx;
-              const isFailed =
-                state.status === "failed" && p === state.phase;
-              return (
-                <div
-                  key={p}
-                  className={`w-8 h-1 rounded-full ${
-                    isFailed
-                      ? "bg-red-400"
-                      : isActive
-                        ? "bg-pink-400"
-                        : "bg-muted"
-                  }`}
-                />
-              );
-            })}
-            {/* 社長面接ルートの場合、特別なインジケーター */}
-            {(isInCeoInterview ||
+        {/* フェーズ名 + 面接官情報 */}
+        <div className="mb-2">
+          {isInCeoInterview || isCeoEval ? (
+            <h1 className="font-bold text-lg">
+              ⭐ {PHASE_CONFIG.ceo.label}
+              <span className="text-xs font-normal text-muted-foreground ml-2">
+                {PHASE_CONFIG.ceo.subtitle} ― {PHASE_CONFIG.ceo.role}
+              </span>
+            </h1>
+          ) : (
+            <h1 className="font-bold text-lg">
+              {phaseConfig.label}
+              <span className="text-xs font-normal text-muted-foreground ml-2">
+                {phaseConfig.subtitle} ― {phaseConfig.role}
+              </span>
+            </h1>
+          )}
+        </div>
+        {/* プログレスバー */}
+        <div className="flex items-center gap-1">
+          {PHASES_ORDER.map((p, i) => {
+            const idx = PHASES_ORDER.indexOf(currentPhase);
+            const isActive = i <= idx;
+            const isCurrent = i === idx;
+            const isFailed = false;
+            const showCeo =
+              isInCeoInterview ||
               isCeoEval ||
-              state.status === "ceo-skip-announcement" ||
-              (state.status === "complete" && state.isCeoRoute)) && (
-              <div className="w-8 h-1 rounded-full bg-yellow-400" />
-            )}
-          </div>
+              false;
+            return (
+              <div key={p} className="flex items-center gap-1 flex-1">
+                <div className="flex flex-col items-center flex-1">
+                  <div
+                    className={`w-full h-2 rounded-full transition-all ${
+                      isFailed
+                        ? "bg-red-400"
+                        : isCurrent
+                          ? "bg-pink-500"
+                          : isActive
+                            ? "bg-pink-300"
+                            : "bg-muted"
+                    }`}
+                  />
+                  <span
+                    className={`text-[10px] mt-1 transition-colors ${
+                      isFailed
+                        ? "text-red-500 font-bold"
+                        : isCurrent
+                          ? "text-pink-500 font-bold"
+                          : isActive
+                            ? "text-muted-foreground"
+                            : "text-muted-foreground/40"
+                    }`}
+                  >
+                    {PHASE_CONFIG[p].label}
+                  </span>
+                </div>
+                {/* 社長面接ルートの特別バー（最後のフェーズの後に表示） */}
+                {i === PHASES_ORDER.length - 1 && showCeo && (
+                  <div className="flex flex-col items-center flex-1">
+                    <div className="w-full h-2 rounded-full bg-yellow-400" />
+                    <span className="text-[10px] mt-1 text-yellow-600 font-bold">
+                      社長面接
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </header>
 
@@ -422,13 +307,9 @@ export default function InterviewChat({
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed bg-card ring-1 ring-foreground/10 rounded-bl-md">
               <div className="text-[10px] font-bold text-muted-foreground mb-1">
-                {state.status === "evaluating" ||
-                state.status === "final-evaluating" ||
-                state.status === "ceo-evaluating"
-                  ? "評価"
-                  : isInCeoInterview
-                    ? PHASE_CONFIG.ceo.role
-                    : phaseConfig.role}
+                {isInCeoInterview
+                  ? PHASE_CONFIG.ceo.role
+                  : phaseConfig.role}
               </div>
               <div className="whitespace-pre-wrap">{streamingText}</div>
             </div>
@@ -446,113 +327,6 @@ export default function InterviewChat({
               </div>
             </div>
           </div>
-        )}
-
-        {/* 社長面接スキップ演出 */}
-        {state.status === "ceo-skip-announcement" && (
-          <Card className="bg-gradient-to-r from-yellow-50 to-amber-50 dark:from-yellow-950/20 dark:to-amber-950/20 mt-4 ring-2 ring-yellow-300">
-            <CardContent className="pt-2">
-              <div className="text-xs font-bold text-yellow-600 mb-2">
-                ⭐ 特別選考ルート
-              </div>
-              <div className="text-sm whitespace-pre-wrap leading-relaxed mb-3">
-                {state.evaluation}
-              </div>
-              <div className="bg-yellow-100 dark:bg-yellow-900/30 rounded-lg p-3 text-sm">
-                <p className="font-bold text-yellow-800 dark:text-yellow-300">
-                  あなたの回答が非常に高く評価されました。
-                </p>
-                <p className="text-yellow-700 dark:text-yellow-400 mt-1">
-                  通常の選考フローを飛ばして、社長が直接面接したいとのことです。
-                </p>
-              </div>
-              <Button
-                onClick={handleSkipToCeo}
-                className="mt-4 rounded-full bg-gradient-to-r from-yellow-400 to-amber-500 text-white font-bold border-none shadow-lg shadow-yellow-200/50"
-              >
-                ⭐ 社長面接へ
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* フェーズ結果（通過） */}
-        {state.status === "phase-result" && (
-          <Card className="bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-950/20 dark:to-emerald-950/20 mt-4">
-            <CardContent className="pt-2">
-              <div className="text-xs font-bold text-green-600 mb-2">
-                {PHASE_CONFIG[state.phase].label} ― 通過！
-              </div>
-              <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                {state.result.evaluation}
-              </div>
-              <Button
-                onClick={handleNextPhase}
-                className="mt-4 rounded-full bg-gradient-to-r from-orange-400 via-pink-500 to-violet-500 text-white font-bold border-none"
-              >
-                {state.result.nextPhase
-                  ? `${PHASE_CONFIG[state.result.nextPhase].label}へ進む`
-                  : "最終結果を見る"}
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* 不合格 */}
-        {state.status === "failed" && (
-          <Card className="bg-gradient-to-r from-red-50 to-orange-50 dark:from-red-950/20 dark:to-orange-950/20 mt-4">
-            <CardContent className="pt-2">
-              <div className="text-xs font-bold text-red-500 mb-2">
-                {PHASE_CONFIG[state.phase].label} ― 不通過
-              </div>
-              <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                {state.evaluation}
-              </div>
-              <p className="text-xs text-muted-foreground mt-3">
-                残念ながらここで面接終了です。
-              </p>
-              <div className="flex gap-2 mt-4">
-                <Button
-                  onClick={() => router.push("/")}
-                  variant="outline"
-                  className="rounded-full"
-                >
-                  もう一回チャレンジ
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* 最終結果 */}
-        {state.status === "complete" && (
-          <Card
-            className={`mt-4 ${
-              state.isCeoRoute
-                ? "bg-gradient-to-r from-yellow-50 to-amber-50 dark:from-yellow-950/20 dark:to-amber-950/20 ring-2 ring-yellow-300"
-                : "bg-gradient-to-r from-violet-50 to-pink-50 dark:from-violet-950/20 dark:to-pink-950/20"
-            }`}
-          >
-            <CardContent className="pt-2">
-              <div
-                className={`text-xs font-bold mb-2 ${state.isCeoRoute ? "text-yellow-600" : "text-violet-500"}`}
-              >
-                {state.isCeoRoute ? "⭐ 社長からの総合評価" : "総合評価"}
-              </div>
-              <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                {state.finalEvaluation}
-              </div>
-              <div className="flex gap-2 mt-4">
-                <Button
-                  onClick={() => router.push("/")}
-                  variant="outline"
-                  className="rounded-full"
-                >
-                  もう一回やる
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
         )}
 
         <div ref={messagesEndRef} />
@@ -613,6 +387,19 @@ export default function InterviewChat({
           </form>
         </div>
       )}
+
+      {/* 結果を見るボタン */}
+      {state.status === "closing" && (
+        <div className="border-t bg-card px-4 py-4">
+          <Button
+            onClick={handleViewResult}
+            className="w-full rounded-full bg-gradient-to-r from-orange-400 via-pink-500 to-violet-500 text-white py-5 font-bold border-none shadow-lg shadow-pink-200/50"
+          >
+            結果を見る
+          </Button>
+        </div>
+      )}
+
     </div>
   );
 }

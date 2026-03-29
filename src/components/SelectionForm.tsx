@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { useInterviewStore } from "@/store/interview";
 import {
   COMPANY_TYPES,
   type CompanyTypeId,
@@ -22,6 +23,7 @@ const STEPS = ["type", "size", "confirm"] as const;
 
 export default function SelectionForm() {
   const router = useRouter();
+  const { setConfig, reset } = useInterviewStore();
   const [step, setStep] = useState<"type" | "size" | "confirm">("type");
   const [companyType, setCompanyType] = useState<CompanyTypeId | null>(null);
   const [companySize, setCompanySize] = useState<CompanySizeId | null>(null);
@@ -40,27 +42,40 @@ export default function SelectionForm() {
   return (
     <div className="w-full max-w-2xl mx-auto px-4">
       {/* ステップインジケーター */}
-      <div className="flex items-center justify-center gap-2 mb-10">
+      <div className="flex items-center justify-center gap-0 mb-10">
         {STEP_LABELS.map((label, i) => {
           const isActive = currentIndex >= i;
           const isCurrent = currentIndex === i;
           return (
-            <div key={label} className="flex items-center gap-2">
+            <div key={label} className="flex items-center">
               {i > 0 && (
                 <div
-                  className={`w-8 h-0.5 rounded-full transition-colors ${isActive ? "bg-pink-400" : "bg-muted"}`}
+                  className={`w-10 h-0.5 transition-colors ${isActive ? "bg-pink-400" : "bg-muted"}`}
                 />
               )}
-              <div
-                className={`text-sm font-bold transition-colors ${
-                  isCurrent
-                    ? "text-pink-500"
-                    : isActive
-                      ? "text-foreground"
-                      : "text-muted-foreground/40"
-                }`}
-              >
-                {label}
+              <div className="flex flex-col items-center gap-1">
+                <div
+                  className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-all ${
+                    isCurrent
+                      ? "bg-pink-500 text-white shadow-md shadow-pink-200"
+                      : isActive
+                        ? "bg-pink-100 text-pink-600"
+                        : "bg-muted text-muted-foreground/40"
+                  }`}
+                >
+                  {i + 1}
+                </div>
+                <span
+                  className={`text-[10px] font-bold transition-colors ${
+                    isCurrent
+                      ? "text-pink-500"
+                      : isActive
+                        ? "text-foreground"
+                        : "text-muted-foreground/40"
+                  }`}
+                >
+                  {label}
+                </span>
               </div>
             </div>
           );
@@ -149,7 +164,7 @@ export default function SelectionForm() {
           </p>
 
           {/* 会社タイプ・規模感 */}
-          <Card className="inline-flex flex-col mb-4">
+          <Card className="w-full mb-4">
             <CardContent className="flex flex-col gap-4 pt-2">
               <div className="flex items-center gap-4">
                 <span className="text-3xl">{selectedType.emoji}</span>
@@ -176,7 +191,7 @@ export default function SelectionForm() {
           </Card>
 
           {/* シチュエーション */}
-          <Card className="inline-flex flex-col mb-8 text-left">
+          <Card className="w-full mb-8 text-left">
             <CardHeader className="pb-0">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm">
@@ -218,12 +233,9 @@ export default function SelectionForm() {
             <Button
               size="lg"
               onClick={() => {
-                const params = new URLSearchParams({
-                  type: companyType!,
-                  size: companySize!,
-                  situation: encodeURIComponent(JSON.stringify(situation)),
-                });
-                router.push(`/interview?${params.toString()}`);
+                reset();
+                setConfig(companyType!, companySize!, situation!);
+                router.push("/interview");
               }}
               className="rounded-full bg-gradient-to-r from-orange-400 via-pink-500 to-violet-500 text-white px-10 py-6 font-bold text-base shadow-lg shadow-pink-200/50 hover:shadow-xl hover:shadow-pink-300/50 hover:-translate-y-0.5 active:translate-y-0 border-none"
             >
