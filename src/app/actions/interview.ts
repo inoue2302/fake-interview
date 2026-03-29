@@ -32,7 +32,7 @@ export async function chat(
   (async () => {
     try {
       const { textStream } = streamText({
-        model: anthropic("claude-sonnet-4-20250514"),
+        model: anthropic("claude-sonnet-4-6"),
         system: systemPrompt,
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
         maxOutputTokens: 300,
@@ -65,7 +65,7 @@ export async function evaluate(
   (async () => {
     try {
       const { textStream } = streamText({
-        model: anthropic("claude-sonnet-4-20250514"),
+        model: anthropic("claude-sonnet-4-6"),
         system: evalPrompt,
         messages: [
           {
@@ -111,7 +111,7 @@ export async function finalEvaluate(
   (async () => {
     try {
       const { textStream } = streamText({
-        model: anthropic("claude-sonnet-4-20250514"),
+        model: anthropic("claude-sonnet-4-6"),
         system: finalPrompt,
         messages: [
           {
