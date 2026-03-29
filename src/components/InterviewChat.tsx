@@ -107,36 +107,37 @@ export default function InterviewChat({
 
     const isLastAnswer = questionIndex >= config.questionsCount;
 
-    const { text } = await chat(
-      phase,
-      companyType,
-      companySize,
-      situation,
-      newMessages,
-      isLastAnswer
-    );
-
-    let accumulated = "";
-    for await (const chunk of readStreamableValue(text)) {
-      if (chunk) {
-        accumulated = chunk;
-        setStreamingText(accumulated);
-      }
-    }
-
-    const updatedMessages = [
-      ...newMessages,
-      { role: "assistant" as const, content: accumulated },
-    ];
-    setMessages(updatedMessages);
-    setStreamingText("");
-    setStreaming(false);
-
     if (isLastAnswer) {
-      setAllMessages((prev) => ({ ...prev, [phase]: updatedMessages }));
-      store.savePhaseMessages(phase, updatedMessages);
+      // 最後の回答 → LLMを呼ばず直接closingへ
+      setStreaming(false);
+      setAllMessages((prev) => ({ ...prev, [phase]: newMessages }));
+      store.savePhaseMessages(phase, newMessages);
       setState({ status: "closing", phase });
     } else {
+      // 通常の質問続行
+      const { text } = await chat(
+        phase,
+        companyType,
+        companySize,
+        situation,
+        newMessages
+      );
+
+      let accumulated = "";
+      for await (const chunk of readStreamableValue(text)) {
+        if (chunk) {
+          accumulated = chunk;
+          setStreamingText(accumulated);
+        }
+      }
+
+      const updatedMessages = [
+        ...newMessages,
+        { role: "assistant" as const, content: accumulated },
+      ];
+      setMessages(updatedMessages);
+      setStreamingText("");
+      setStreaming(false);
       setState({
         status: "interviewing",
         phase,
@@ -156,7 +157,7 @@ export default function InterviewChat({
       {
         role: "assistant",
         content:
-          "本日はお時間いただきありがとうございました。結果は追ってご連絡いたします。",
+          "なるほど、そうなんですね。よくわかりました。\n本日はお時間いただきありがとうございました。結果は追ってご連絡いたします。",
       },
     ]);
   }, [state]);
