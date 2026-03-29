@@ -19,6 +19,7 @@ type Message = { role: "user" | "assistant"; content: string };
 
 type InterviewState =
   | { status: "interviewing"; phase: InterviewPhase; questionIndex: number }
+  | { status: "closing"; phase: InterviewPhase }
   | { status: "evaluating"; phase: InterviewPhase }
   | { status: "final-evaluating" }
   | { status: "ceo-evaluating" };
@@ -133,11 +134,8 @@ export default function InterviewChat({
 
     if (questionIndex >= config.questionsCount) {
       setAllMessages((prev) => ({ ...prev, [phase]: updatedMessages }));
-      if (phase === "ceo") {
-        setState({ status: "ceo-evaluating" });
-      } else {
-        setState({ status: "evaluating", phase });
-      }
+      // 面接官の締めの挨拶を表示してから評価へ
+      setState({ status: "closing", phase });
     } else {
       setState({
         status: "interviewing",
@@ -146,6 +144,57 @@ export default function InterviewChat({
       });
     }
   };
+
+  // 締めの挨拶 → 評価へ
+  useEffect(() => {
+    if (state.status !== "closing") return;
+
+    const { phase } = state;
+    const closingMessages = allMessages[phase] ?? messages;
+
+    (async () => {
+      setStreaming(true);
+      setStreamingText("");
+
+      // 面接官に締めの挨拶をさせる
+      const closingPromptMessages = [
+        ...closingMessages,
+        {
+          role: "user" as const,
+          content: "[システム指示] 面接の全質問が終了しました。候補者に「本日はありがとうございました。結果は追ってご連絡します。」のような自然な締めの挨拶をしてください。1〜2行で簡潔に。",
+        },
+      ];
+
+      const { text } = await chat(
+        phase,
+        companyType,
+        companySize,
+        situation,
+        closingPromptMessages
+      );
+
+      let accumulated = "";
+      for await (const chunk of readStreamableValue(text)) {
+        if (chunk) {
+          accumulated = chunk;
+          setStreamingText(accumulated);
+        }
+      }
+
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: accumulated },
+      ]);
+      setStreamingText("");
+      setStreaming(false);
+
+      if (phase === "ceo") {
+        setState({ status: "ceo-evaluating" });
+      } else {
+        setState({ status: "evaluating", phase });
+      }
+    })();
+  }, [state, allMessages, messages, companyType, companySize, situation]);
 
   // 評価実行
   useEffect(() => {
@@ -305,7 +354,9 @@ export default function InterviewChat({
   }, [state, allMessages, companyType, companySize, situation, router]);
 
   const currentPhase =
-    state.status === "interviewing" || state.status === "evaluating"
+    state.status === "interviewing" ||
+    state.status === "closing" ||
+    state.status === "evaluating"
       ? state.phase
       : "final";
 
