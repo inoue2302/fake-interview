@@ -7,7 +7,6 @@ import {
   chat,
   evaluate,
   finalEvaluate,
-  ceoEvaluate,
 } from "@/app/actions/interview";
 import { PHASE_CONFIG, PHASES_ORDER, type InterviewPhase } from "@/data/prompts";
 import type { Situation } from "@/data/situations";
@@ -21,8 +20,7 @@ type InterviewState =
   | { status: "interviewing"; phase: InterviewPhase; questionIndex: number }
   | { status: "closing"; phase: InterviewPhase }
   | { status: "evaluating"; phase: InterviewPhase }
-  | { status: "final-evaluating" }
-  | { status: "ceo-evaluating" };
+;
 
 type Props = {
   companyType: string;
@@ -40,14 +38,11 @@ export default function InterviewChat({
   const router = useRouter();
   const store = useInterviewStore();
 
-  const isFinalEvaluateOnly = initialPhase === "final-evaluate";
-  const actualStartPhase: InterviewPhase = isFinalEvaluateOnly ? "final" : initialPhase;
-
-  const [state, setState] = useState<InterviewState>(
-    isFinalEvaluateOnly
-      ? { status: "final-evaluating" }
-      : { status: "interviewing", phase: actualStartPhase, questionIndex: 0 }
-  );
+  const [state, setState] = useState<InterviewState>({
+    status: "interviewing",
+    phase: initialPhase === "final-evaluate" ? "final" : initialPhase,
+    questionIndex: 0,
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [allMessages, setAllMessages] = useState<Record<string, Message[]>>({});
   const [input, setInput] = useState("");
@@ -90,11 +85,10 @@ export default function InterviewChat({
   useEffect(() => {
     if (!initializedRef.current) {
       initializedRef.current = true;
-      if (!isFinalEvaluateOnly) {
-        startPhaseHandler(actualStartPhase);
-      }
+      const phase = initialPhase === "final-evaluate" ? "final" as InterviewPhase : initialPhase;
+      startPhaseHandler(phase);
     }
-  }, [startPhaseHandler, actualStartPhase, isFinalEvaluateOnly]);
+  }, [startPhaseHandler, initialPhase]);
 
   const handleSend = async () => {
     if (!input.trim() || streaming || state.status !== "interviewing") return;
@@ -164,11 +158,7 @@ export default function InterviewChat({
   const handleViewResult = () => {
     if (state.status !== "closing") return;
     const { phase } = state;
-    if (phase === "ceo") {
-      setState({ status: "ceo-evaluating" });
-    } else {
-      setState({ status: "evaluating", phase });
-    }
+    setState({ status: "evaluating", phase });
   };
 
   // 評価実行（非ストリーミング → 結果ページへ遷移）
@@ -211,8 +201,9 @@ export default function InterviewChat({
           });
           router.push("/result");
           break;
-        case "final_evaluate": {
-          // 最終面接通過 → 直接最終評価を実行
+        case "final_evaluate":
+        case "ceo_complete": {
+          // 最終面接 or CEO面接通過 → 直接最終評価を実行
           const finalEvalText = await finalEvaluate(
             companyType,
             companySize,
@@ -223,6 +214,7 @@ export default function InterviewChat({
             status: "complete",
             phase: "総合",
             evaluation: finalEvalText,
+            isCeoRoute: resultData.outcome === "ceo_complete",
           });
           router.push("/result");
           break;
@@ -240,57 +232,6 @@ export default function InterviewChat({
     })();
   }, [state, allMessages, messages, companyType, companySize, situation, store, router]);
 
-  // 最終評価（非ストリーミング）
-  useEffect(() => {
-    if (state.status !== "final-evaluating") return;
-
-    (async () => {
-      setStreaming(true);
-
-      const evalText = await finalEvaluate(
-        companyType,
-        companySize,
-        situation,
-        allMessages
-      );
-
-      setStreaming(false);
-      store.setResult({
-        status: "complete",
-        phase: "総合",
-        evaluation: evalText,
-      });
-      router.push("/result");
-    })();
-  }, [state, allMessages, companyType, companySize, situation, router, store]);
-
-  // 社長面接の評価（非ストリーミング）
-  useEffect(() => {
-    if (state.status !== "ceo-evaluating") return;
-
-    const ceoMessages = allMessages["ceo"] ?? [];
-
-    (async () => {
-      setStreaming(true);
-
-      const evalText = await ceoEvaluate(
-        companyType,
-        companySize,
-        situation,
-        ceoMessages
-      );
-
-      setStreaming(false);
-      store.setResult({
-        status: "complete",
-        phase: "社長面接",
-        evaluation: evalText,
-        isCeoRoute: true,
-      });
-      router.push("/result");
-    })();
-  }, [state, allMessages, companyType, companySize, situation, router, store]);
-
   const currentPhase =
     state.status === "interviewing" ||
     state.status === "closing" ||
@@ -303,7 +244,7 @@ export default function InterviewChat({
   // 社長面接中かどうか
   const isInCeoInterview =
     state.status === "interviewing" && state.phase === "ceo";
-  const isCeoEval = state.status === "ceo-evaluating";
+  const isCeoEval = false;
 
   return (
     <div className="flex flex-col h-screen max-w-3xl mx-auto">
@@ -432,13 +373,9 @@ export default function InterviewChat({
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed bg-card ring-1 ring-foreground/10 rounded-bl-md">
               <div className="text-[10px] font-bold text-muted-foreground mb-1">
-                {state.status === "evaluating" ||
-                state.status === "final-evaluating" ||
-                state.status === "ceo-evaluating"
-                  ? "評価"
-                  : isInCeoInterview
-                    ? PHASE_CONFIG.ceo.role
-                    : phaseConfig.role}
+                {isInCeoInterview
+                  ? PHASE_CONFIG.ceo.role
+                  : phaseConfig.role}
               </div>
               <div className="whitespace-pre-wrap">{streamingText}</div>
             </div>
@@ -530,9 +467,7 @@ export default function InterviewChat({
       )}
 
       {/* 評価中のローディング */}
-      {(state.status === "evaluating" ||
-        state.status === "final-evaluating" ||
-        state.status === "ceo-evaluating") && (
+      {state.status === "evaluating" && (
         <div className="border-t bg-card px-4 py-4 text-center">
           <p className="text-sm text-muted-foreground animate-pulse">
             評価中です...
