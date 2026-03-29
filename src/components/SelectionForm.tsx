@@ -164,7 +164,7 @@ export default function SelectionForm() {
           </p>
 
           {/* 会社タイプ・規模感 */}
-          <Card className="inline-flex flex-col mb-6">
+          <Card className="w-full mb-4">
             <CardContent className="flex flex-col gap-4 pt-2">
               <div className="flex items-center gap-4">
                 <span className="text-3xl">{selectedType.emoji}</span>
@@ -191,7 +191,7 @@ export default function SelectionForm() {
           </Card>
 
           {/* シチュエーション */}
-          <Card className="inline-flex flex-col mb-8 text-left">
+          <Card className="w-full mb-8 text-left">
             <CardHeader className="pb-0">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm">
