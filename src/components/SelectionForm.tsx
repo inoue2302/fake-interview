@@ -6,6 +6,14 @@ import {
   type CompanyTypeId,
   type CompanySizeId,
 } from "@/types/interview";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 const STEP_LABELS = ["会社タイプ", "規模感", "確認"] as const;
 const STEPS = ["type", "size", "confirm"] as const;
@@ -30,7 +38,7 @@ export default function SelectionForm() {
             <div key={label} className="flex items-center gap-2">
               {i > 0 && (
                 <div
-                  className={`w-8 h-0.5 rounded-full transition-colors ${isActive ? "bg-pink-400" : "bg-zinc-200"}`}
+                  className={`w-8 h-0.5 rounded-full transition-colors ${isActive ? "bg-pink-400" : "bg-muted"}`}
                 />
               )}
               <div
@@ -38,8 +46,8 @@ export default function SelectionForm() {
                   isCurrent
                     ? "text-pink-500"
                     : isActive
-                      ? "text-zinc-700"
-                      : "text-zinc-300"
+                      ? "text-foreground"
+                      : "text-muted-foreground/40"
                 }`}
               >
                 {label}
@@ -55,28 +63,28 @@ export default function SelectionForm() {
           <h2 className="text-2xl font-extrabold text-center mb-1">
             どんな会社を受ける？ 🏢
           </h2>
-          <p className="text-zinc-400 text-center text-sm mb-8">
+          <p className="text-muted-foreground text-center text-sm mb-8">
             会社タイプで面接官のキャラが変わるよ！
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {COMPANY_TYPES.map((type) => (
-              <button
+              <Card
                 key={type.id}
+                className="cursor-pointer transition-all hover:border-pink-300 hover:shadow-lg hover:shadow-pink-100/50 hover:-translate-y-0.5 active:translate-y-0"
                 onClick={() => {
                   setCompanyType(type.id);
                   setCompanySize(null);
                   setStep("size");
                 }}
-                className="group flex flex-col items-start gap-1 rounded-2xl border-2 border-zinc-100 bg-white p-5 text-left transition-all hover:border-pink-300 hover:shadow-lg hover:shadow-pink-100/50 hover:-translate-y-0.5 active:translate-y-0"
               >
-                <span className="text-3xl mb-1">{type.emoji}</span>
-                <span className="font-bold text-zinc-800 group-hover:text-pink-600">
-                  {type.label}
-                </span>
-                <span className="text-sm text-zinc-400">
-                  {type.description}
-                </span>
-              </button>
+                <CardHeader>
+                  <span className="text-3xl">{type.emoji}</span>
+                  <CardTitle className="group-hover/card:text-pink-600">
+                    {type.label}
+                  </CardTitle>
+                  <CardDescription>{type.description}</CardDescription>
+                </CardHeader>
+              </Card>
             ))}
           </div>
         </div>
@@ -88,82 +96,85 @@ export default function SelectionForm() {
           <h2 className="text-2xl font-extrabold text-center mb-1">
             会社の規模は？ 👥
           </h2>
-          <p className="text-zinc-400 text-center text-sm mb-8">
+          <p className="text-muted-foreground text-center text-sm mb-8">
             規模で質問の雰囲気が変わるよ！
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {selectedType.sizes.map((size) => (
-              <button
+              <Card
                 key={size.id}
+                className="cursor-pointer text-center transition-all hover:border-violet-300 hover:shadow-lg hover:shadow-violet-100/50 hover:-translate-y-0.5 active:translate-y-0"
                 onClick={() => {
                   setCompanySize(size.id);
                   setStep("confirm");
                 }}
-                className="group flex flex-col items-center gap-1 rounded-2xl border-2 border-zinc-100 bg-white p-5 text-center transition-all hover:border-violet-300 hover:shadow-lg hover:shadow-violet-100/50 hover:-translate-y-0.5 active:translate-y-0"
               >
-                <span className="font-bold text-zinc-800 group-hover:text-violet-600">
-                  {size.label}
-                </span>
-                <span className="text-sm text-zinc-400">
-                  {size.description}
-                </span>
-              </button>
+                <CardHeader className="items-center">
+                  <CardTitle className="group-hover/card:text-violet-600">
+                    {size.label}
+                  </CardTitle>
+                  <CardDescription>{size.description}</CardDescription>
+                </CardHeader>
+              </Card>
             ))}
           </div>
-          <button
+          <Button
+            variant="ghost"
             onClick={() => setStep("type")}
-            className="mt-6 text-sm text-zinc-300 hover:text-pink-400 mx-auto block transition-colors"
+            className="mt-6 mx-auto block text-muted-foreground hover:text-pink-400"
           >
             ← 戻る
-          </button>
+          </Button>
         </div>
       )}
 
       {/* Step 3: 確認 */}
       {step === "confirm" && selectedType && selectedSize && (
         <div className="text-center">
-          <h2 className="text-2xl font-extrabold mb-2">
-            準備OK？ ✨
-          </h2>
-          <p className="text-zinc-400 text-sm mb-8">
+          <h2 className="text-2xl font-extrabold mb-2">準備OK？ ✨</h2>
+          <p className="text-muted-foreground text-sm mb-8">
             この内容で面接スタート！
           </p>
-          <div className="inline-flex flex-col gap-4 rounded-2xl border-2 border-zinc-100 bg-white p-8 mb-8 shadow-sm">
-            <div className="flex items-center gap-4">
-              <span className="text-3xl">{selectedType.emoji}</span>
-              <div className="text-left">
-                <div className="text-xs font-bold text-pink-400">
-                  会社タイプ
-                </div>
-                <div className="font-bold text-zinc-800">
-                  {selectedType.label}
-                </div>
-              </div>
-            </div>
-            <div className="h-px bg-zinc-100" />
-            <div className="flex items-center gap-4">
-              <span className="text-3xl">👥</span>
-              <div className="text-left">
-                <div className="text-xs font-bold text-violet-400">
-                  規模感
-                </div>
-                <div className="font-bold text-zinc-800">
-                  {selectedSize.label}（{selectedSize.description}）
+          <Card className="inline-flex flex-col mb-8">
+            <CardContent className="flex flex-col gap-4 pt-2">
+              <div className="flex items-center gap-4">
+                <span className="text-3xl">{selectedType.emoji}</span>
+                <div className="text-left">
+                  <div className="text-xs font-bold text-pink-400">
+                    会社タイプ
+                  </div>
+                  <div className="font-bold">{selectedType.label}</div>
                 </div>
               </div>
-            </div>
-          </div>
+              <div className="h-px bg-border" />
+              <div className="flex items-center gap-4">
+                <span className="text-3xl">👥</span>
+                <div className="text-left">
+                  <div className="text-xs font-bold text-violet-400">
+                    規模感
+                  </div>
+                  <div className="font-bold">
+                    {selectedSize.label}（{selectedSize.description}）
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
           <div>
-            <button className="rounded-full bg-gradient-to-r from-orange-400 via-pink-500 to-violet-500 text-white px-10 py-3.5 font-bold text-base shadow-lg shadow-pink-200/50 transition hover:shadow-xl hover:shadow-pink-300/50 hover:-translate-y-0.5 active:translate-y-0">
+            <Button
+              size="lg"
+              className="rounded-full bg-gradient-to-r from-orange-400 via-pink-500 to-violet-500 text-white px-10 py-6 font-bold text-base shadow-lg shadow-pink-200/50 hover:shadow-xl hover:shadow-pink-300/50 hover:-translate-y-0.5 active:translate-y-0 border-none"
+            >
               面接をはじめる 🎤
-            </button>
+            </Button>
           </div>
-          <button
+          <Button
+            variant="ghost"
             onClick={() => setStep("size")}
-            className="mt-5 text-sm text-zinc-300 hover:text-violet-400 transition-colors"
+            className="mt-5 text-muted-foreground hover:text-violet-400"
           >
             ← 戻る
-          </button>
+          </Button>
         </div>
       )}
     </div>
