@@ -17,41 +17,35 @@ import { Card, CardContent } from "@/components/ui/card";
 
 type Message = { role: "user" | "assistant"; content: string };
 
-type PhaseResultData = {
-  evaluation: string;
-  passed: boolean;
-  score: number;
-  nextPhase: InterviewPhase | null;
-  skipToCeo: boolean;
-};
-
 type InterviewState =
   | { status: "interviewing"; phase: InterviewPhase; questionIndex: number }
   | { status: "evaluating"; phase: InterviewPhase }
-  | { status: "phase-result"; phase: InterviewPhase; result: PhaseResultData }
-  | { status: "ceo-skip-announcement"; fromPhase: InterviewPhase; score: number; evaluation: string }
   | { status: "final-evaluating" }
-  | { status: "ceo-evaluating" }
-  | { status: "failed"; phase: InterviewPhase }
-  | { status: "complete" };
+  | { status: "ceo-evaluating" };
 
 type Props = {
   companyType: string;
   companySize: string;
   situation: Situation;
+  startPhase?: InterviewPhase | "final-evaluate";
 };
 
 export default function InterviewChat({
   companyType,
   companySize,
   situation,
+  startPhase: initialPhase = "first",
 }: Props) {
   const router = useRouter();
-  const [state, setState] = useState<InterviewState>({
-    status: "interviewing",
-    phase: "first",
-    questionIndex: 0,
-  });
+
+  const isFinalEvaluateOnly = initialPhase === "final-evaluate";
+  const actualStartPhase: InterviewPhase = isFinalEvaluateOnly ? "final" : initialPhase;
+
+  const [state, setState] = useState<InterviewState>(
+    isFinalEvaluateOnly
+      ? { status: "final-evaluating" }
+      : { status: "interviewing", phase: actualStartPhase, questionIndex: 0 }
+  );
   const [messages, setMessages] = useState<Message[]>([]);
   const [allMessages, setAllMessages] = useState<Record<string, Message[]>>({});
   const [input, setInput] = useState("");
@@ -68,7 +62,7 @@ export default function InterviewChat({
     scrollToBottom();
   }, [messages, streamingText, scrollToBottom]);
 
-  const startPhase = useCallback(
+  const startPhaseHandler = useCallback(
     async (phase: InterviewPhase) => {
       setStreaming(true);
       setStreamingText("");
@@ -94,9 +88,11 @@ export default function InterviewChat({
   useEffect(() => {
     if (!initializedRef.current) {
       initializedRef.current = true;
-      startPhase("first");
+      if (!isFinalEvaluateOnly) {
+        startPhaseHandler(actualStartPhase);
+      }
     }
-  }, [startPhase]);
+  }, [startPhaseHandler, actualStartPhase, isFinalEvaluateOnly]);
 
   const handleSend = async () => {
     if (!input.trim() || streaming || state.status !== "interviewing") return;
@@ -204,48 +200,38 @@ export default function InterviewChat({
           router.push(`/result?${failParams.toString()}`);
           return;
         }
-        case "skip_to_ceo":
-          setState({
-            status: "ceo-skip-announcement",
-            fromPhase: phase,
-            score: resultData.score,
-            evaluation: evalText,
+        case "skip_to_ceo": {
+          const ceoParams = new URLSearchParams({
+            evaluation: encodeURIComponent(evalText),
+            status: "passed",
+            phase: PHASE_CONFIG[phase].label,
+            nextPhase: "ceo",
+            skipToCeo: "true",
+            type: companyType,
+            size: companySize,
+            situation: encodeURIComponent(JSON.stringify(situation)),
           });
-          break;
-        default:
-          setState({
-            status: "phase-result",
-            phase,
-            result: {
-              evaluation: evalText,
-              passed: true,
-              score: resultData.score,
-              nextPhase: resultData.nextPhase,
-              skipToCeo: resultData.skipToCeo,
-            },
+          router.push(`/result?${ceoParams.toString()}`);
+          return;
+        }
+        default: {
+          const passParams = new URLSearchParams({
+            evaluation: encodeURIComponent(evalText),
+            status: "passed",
+            phase: PHASE_CONFIG[phase].label,
+            type: companyType,
+            size: companySize,
+            situation: encodeURIComponent(JSON.stringify(situation)),
           });
-          break;
+          if (resultData.nextPhase) {
+            passParams.set("nextPhase", resultData.nextPhase);
+          }
+          router.push(`/result?${passParams.toString()}`);
+          return;
+        }
       }
     })();
   }, [state, allMessages, messages, companyType, companySize, situation]);
-
-  const handleNextPhase = () => {
-    if (state.status !== "phase-result") return;
-
-    const { result } = state;
-    if (result.nextPhase) {
-      setMessages([]);
-      startPhase(result.nextPhase);
-    } else {
-      setState({ status: "final-evaluating" });
-    }
-  };
-
-  // 社長面接へスキップ
-  const handleSkipToCeo = () => {
-    setMessages([]);
-    startPhase("ceo");
-  };
 
   // 最終評価
   useEffect(() => {
@@ -321,11 +307,7 @@ export default function InterviewChat({
   const currentPhase =
     state.status === "interviewing" || state.status === "evaluating"
       ? state.phase
-      : state.status === "phase-result" || state.status === "failed"
-        ? state.phase
-        : state.status === "ceo-skip-announcement"
-          ? state.fromPhase
-          : "final";
+      : "final";
 
   const phaseConfig = PHASE_CONFIG[currentPhase];
 
@@ -362,12 +344,11 @@ export default function InterviewChat({
             const idx = PHASES_ORDER.indexOf(currentPhase);
             const isActive = i <= idx;
             const isCurrent = i === idx;
-            const isFailed = state.status === "failed" && p === state.phase;
+            const isFailed = false;
             const showCeo =
               isInCeoInterview ||
               isCeoEval ||
-              state.status === "ceo-skip-announcement" ||
-              state.status === "complete";
+              false;
             return (
               <div key={p} className="flex items-center gap-1 flex-1">
                 <div className="flex flex-col items-center flex-1">
@@ -487,57 +468,6 @@ export default function InterviewChat({
             </div>
           </div>
         )}
-
-        {/* 社長面接スキップ演出 */}
-        {state.status === "ceo-skip-announcement" && (
-          <Card className="bg-gradient-to-r from-yellow-50 to-amber-50 dark:from-yellow-950/20 dark:to-amber-950/20 mt-4 ring-2 ring-yellow-300">
-            <CardContent className="pt-2">
-              <div className="text-xs font-bold text-yellow-600 mb-2">
-                ⭐ 特別選考ルート
-              </div>
-              <div className="text-sm whitespace-pre-wrap leading-relaxed mb-3">
-                {state.evaluation}
-              </div>
-              <div className="bg-yellow-100 dark:bg-yellow-900/30 rounded-lg p-3 text-sm">
-                <p className="font-bold text-yellow-800 dark:text-yellow-300">
-                  あなたの回答が非常に高く評価されました。
-                </p>
-                <p className="text-yellow-700 dark:text-yellow-400 mt-1">
-                  通常の選考フローを飛ばして、社長が直接面接したいとのことです。
-                </p>
-              </div>
-              <Button
-                onClick={handleSkipToCeo}
-                className="mt-4 rounded-full bg-gradient-to-r from-yellow-400 to-amber-500 text-white font-bold border-none shadow-lg shadow-yellow-200/50"
-              >
-                ⭐ 社長面接へ
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* フェーズ結果（通過） */}
-        {state.status === "phase-result" && (
-          <Card className="bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-950/20 dark:to-emerald-950/20 mt-4">
-            <CardContent className="pt-2">
-              <div className="text-xs font-bold text-green-600 mb-2">
-                {PHASE_CONFIG[state.phase].label} ― 通過！
-              </div>
-              <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                {state.result.evaluation}
-              </div>
-              <Button
-                onClick={handleNextPhase}
-                className="mt-4 rounded-full bg-gradient-to-r from-orange-400 via-pink-500 to-violet-500 text-white font-bold border-none"
-              >
-                {state.result.nextPhase
-                  ? `${PHASE_CONFIG[state.result.nextPhase].label}へ進む`
-                  : "最終結果を見る"}
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
 
         <div ref={messagesEndRef} />
       </div>
