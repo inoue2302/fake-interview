@@ -105,25 +105,15 @@ export default function InterviewChat({
     const { phase, questionIndex } = state;
     const config = PHASE_CONFIG[phase];
 
-    // 最後の回答の場合、面接官に新しい質問をさせないよう指示を追加
     const isLastAnswer = questionIndex >= config.questionsCount;
-    const chatMessages = isLastAnswer
-      ? [
-          ...newMessages,
-          {
-            role: "user" as const,
-            content:
-              "[システム指示] これが最後の回答です。新しい質問はせず、回答への短い感想だけ1〜2行で返してください。",
-          },
-        ]
-      : newMessages;
 
     const { text } = await chat(
       phase,
       companyType,
       companySize,
       situation,
-      chatMessages
+      newMessages,
+      isLastAnswer
     );
 
     let accumulated = "";

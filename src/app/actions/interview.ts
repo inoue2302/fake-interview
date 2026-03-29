@@ -25,14 +25,22 @@ export async function chat(
   companyType: string,
   companySize: string,
   situation: Situation,
-  messages: Message[]
+  messages: Message[],
+  isLastAnswer: boolean = false
 ) {
-  const systemPrompt = buildInterviewSystemPrompt(
+  let systemPrompt = buildInterviewSystemPrompt(
     phase,
     companyType,
     companySize,
     situation
   );
+
+  if (isLastAnswer) {
+    systemPrompt += `\n\n## 重要：最後の回答への応答
+これは候補者の最後の回答です。絶対に新しい質問をしないでください。
+回答への短い感想・コメントを1〜2行で返すだけにしてください。
+「〜ですか？」「〜教えてください」のような質問文は禁止です。`;
+  }
 
   const stream = createStreamableValue("");
 
