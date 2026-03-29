@@ -54,9 +54,6 @@ export default function InterviewChat({
   });
   const [messages, setMessages] = useState<Message[]>([]);
   const [allMessages, setAllMessages] = useState<Record<string, Message[]>>({});
-  const [phaseResults, setPhaseResults] = useState<
-    { phase: string; passed: boolean }[]
-  >([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState("");
@@ -170,8 +167,7 @@ export default function InterviewChat({
         companyType,
         companySize,
         situation,
-        phaseMessages,
-        phaseResults
+        phaseMessages
       );
 
       let evalText = "";
@@ -187,51 +183,44 @@ export default function InterviewChat({
         score: 5,
         nextPhase: null,
         skipToCeo: false,
+        outcome: "fail",
       };
       for await (const chunk of readStreamableValue(result)) {
         if (chunk) resultData = chunk;
       }
 
-      setPhaseResults((prev) => [
-        ...prev,
-        { phase, passed: resultData.passed },
-      ]);
       setStreamingText("");
       setStreaming(false);
 
-      if (!resultData.passed) {
-        setState({ status: "failed", phase, evaluation: evalText });
-      } else if (resultData.skipToCeo) {
-        // 高スコア → 社長面接スキップ演出
-        setState({
-          status: "ceo-skip-announcement",
-          fromPhase: phase,
-          score: resultData.score,
-          evaluation: evalText,
-        });
-      } else {
-        setState({
-          status: "phase-result",
-          phase,
-          result: {
-            evaluation: evalText,
-            passed: true,
+      // LangGraphの条件エッジによる分岐結果で状態遷移
+      switch (resultData.outcome) {
+        case "fail":
+          setState({ status: "failed", phase, evaluation: evalText });
+          break;
+        case "skip_to_ceo":
+          setState({
+            status: "ceo-skip-announcement",
+            fromPhase: phase,
             score: resultData.score,
-            nextPhase: resultData.nextPhase,
-            skipToCeo: false,
-          },
-        });
+            evaluation: evalText,
+          });
+          break;
+        default:
+          setState({
+            status: "phase-result",
+            phase,
+            result: {
+              evaluation: evalText,
+              passed: true,
+              score: resultData.score,
+              nextPhase: resultData.nextPhase,
+              skipToCeo: resultData.skipToCeo,
+            },
+          });
+          break;
       }
     })();
-  }, [
-    state,
-    allMessages,
-    messages,
-    companyType,
-    companySize,
-    situation,
-    phaseResults,
-  ]);
+  }, [state, allMessages, messages, companyType, companySize, situation]);
 
   const handleNextPhase = () => {
     if (state.status !== "phase-result") return;

@@ -1,284 +1,169 @@
+/**
+ * LangGraph 面接フローグラフ
+ *
+ * 面接の状態遷移を管理する。LLMのストリーミング呼び出し自体はAI SDKで行い、
+ * LangGraphは「次にどのフェーズに進むか」の判定（条件エッジ）を担当する。
+ *
+ * グラフ構造:
+ *   [START] → [evaluate] → 条件エッジ(routeAfterEvaluation)
+ *                            ├ 不合格         → [fail_end]      → [END]
+ *                            ├ 通常合格       → [advance_phase]  → [END]
+ *                            ├ スコア9以上    → [skip_to_ceo]    → [END]
+ *                            ├ CEO面接完了    → [ceo_complete]   → [END]
+ *                            └ 最終面接通過   → [final_evaluate] → [END]
+ */
+
 import { StateGraph, Annotation, START, END } from "@langchain/langgraph";
-import { ChatAnthropic } from "@langchain/anthropic";
-import {
-  buildInterviewSystemPrompt,
-  buildEvaluationPrompt,
-  buildFinalEvaluationPrompt,
-  PHASE_CONFIG,
-  type InterviewPhase,
-} from "@/data/prompts";
+import type { InterviewPhase } from "@/data/prompts";
 import type { Situation } from "@/data/situations";
 
 // ─── State定義 ───
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
-export type PhaseResult = {
-  phase: InterviewPhase;
-  evaluation: string;
-  passed: boolean;
-  score?: number;
-};
-
 const InterviewState = Annotation.Root({
-  // 設定（不変）
   companyType: Annotation<string>,
   companySize: Annotation<string>,
   situation: Annotation<Situation>,
-
-  // 現在のフェーズ
   currentPhase: Annotation<InterviewPhase>,
 
-  // フェーズごとの会話履歴
-  phaseMessages: Annotation<Record<string, ChatMessage[]>>({
-    reducer: (prev, update) => ({ ...prev, ...update }),
-    default: () => ({}),
+  // 評価テキスト（evaluateノードへの入力）
+  evaluationText: Annotation<string>({
+    reducer: (_, update) => update,
+    default: () => "",
   }),
 
-  // 各フェーズの評価結果
-  phaseResults: Annotation<PhaseResult[]>({
-    reducer: (prev, update) => [...prev, ...update],
-    default: () => [],
+  // 判定結果（グラフの出力）
+  passed: Annotation<boolean>({
+    reducer: (_, update) => update,
+    default: () => false,
   }),
-
-  // 最終評価
-  finalEvaluation: Annotation<string | null>({
+  score: Annotation<number>({
+    reducer: (_, update) => update,
+    default: () => 5,
+  }),
+  nextPhase: Annotation<InterviewPhase | null>({
     reducer: (_, update) => update,
     default: () => null,
   }),
-
-  // 現在のフェーズの面接官応答（ストリーミング用）
-  currentResponse: Annotation<string | null>({
+  skipToCeo: Annotation<boolean>({
     reducer: (_, update) => update,
-    default: () => null,
+    default: () => false,
   }),
-
-  // グラフの次のアクション指示
-  action: Annotation<string>({
+  outcome: Annotation<
+    "advance" | "skip_to_ceo" | "final_evaluate" | "ceo_complete" | "fail"
+  >({
     reducer: (_, update) => update,
-    default: () => "start_phase",
+    default: () => "advance",
   }),
 });
 
-export type InterviewStateType = typeof InterviewState.State;
-
-const model = new ChatAnthropic({
-  model: "claude-sonnet-4-6",
-  maxTokens: 300,
-});
+export type InterviewGraphInput = typeof InterviewState.Update;
+export type InterviewGraphOutput = typeof InterviewState.State;
 
 // ─── ノード定義 ───
 
-/** 面接官の発言を生成するノード */
-async function interviewNode(state: InterviewStateType) {
-  const { currentPhase, companyType, companySize, situation, phaseMessages } =
-    state;
-  const messages = phaseMessages[currentPhase] ?? [];
+/** 評価テキストからスコアと合否を抽出する */
+function evaluateNode(state: InterviewGraphOutput) {
+  const { evaluationText, currentPhase } = state;
 
-  const systemPrompt = buildInterviewSystemPrompt(
-    currentPhase,
-    companyType,
-    companySize,
-    situation
-  );
+  const passed = evaluationText.includes("【通過】");
 
-  const langchainMessages = [
-    { role: "system" as const, content: systemPrompt },
-    ...messages.map((m) => ({
-      role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
-      content: m.content,
-    })),
-  ];
-
-  const response = await model.invoke(langchainMessages);
-  const responseText =
-    typeof response.content === "string"
-      ? response.content
-      : response.content
-          .filter((c) => c.type === "text")
-          .map((c) => ("text" in c ? c.text : ""))
-          .join("");
-
-  // 会話履歴にアシスタントの応答を追加
-  const updatedMessages = [
-    ...messages,
-    { role: "assistant" as const, content: responseText },
-  ];
-
-  return {
-    phaseMessages: { [currentPhase]: updatedMessages },
-    currentResponse: responseText,
-    action: "wait_user", // ユーザーの回答を待つ
-  };
-}
-
-/** フェーズ評価を生成するノード */
-async function evaluateNode(state: InterviewStateType) {
-  const { currentPhase, companyType, companySize, situation, phaseMessages } =
-    state;
-  const messages = phaseMessages[currentPhase] ?? [];
-
-  const evalPrompt = buildEvaluationPrompt(currentPhase, companyType, situation);
-  const conversationText = messages
-    .map(
-      (m) =>
-        `${m.role === "assistant" ? "面接官" : "候補者"}: ${m.content}`
-    )
-    .join("\n\n");
-
-  const response = await model.invoke([
-    { role: "system", content: evalPrompt },
-    {
-      role: "user",
-      content: `以下が面接のやり取りです:\n\n${conversationText}\n\n評価コメントをお願いします。`,
-    },
-  ]);
-
-  const evalText =
-    typeof response.content === "string"
-      ? response.content
-      : response.content
-          .filter((c) => c.type === "text")
-          .map((c) => ("text" in c ? c.text : ""))
-          .join("");
-
-  // 【通過】を含むか判定
-  const passed = evalText.includes("【通過】");
-
-  // 内部スコアを抽出
-  const scoreMatch = evalText.match(/内部スコア:\s*(\d+)\s*\/\s*10/);
+  const scoreMatch = evaluationText.match(/内部スコア:\s*(\d+)\s*\/\s*10/);
   const score = scoreMatch ? parseInt(scoreMatch[1], 10) : 5;
 
-  return {
-    phaseResults: [{ phase: currentPhase, evaluation: evalText, passed, score }],
-    currentResponse: evalText,
-    action: passed ? "next" : "fail",
-  };
+  return { passed, score };
 }
 
-/** 合否 + スコアによる分岐ルーター（LangGraphの条件エッジ） */
+/** 条件エッジ: 合否 + スコアで分岐先を決定 */
 function routeAfterEvaluation(
-  state: InterviewStateType
-): "advance_phase" | "final_evaluate" | "fail_end" | "skip_to_ceo" {
-  const lastResult = state.phaseResults[state.phaseResults.length - 1];
-  if (!lastResult?.passed) return "fail_end";
+  state: InterviewGraphOutput
+): "advance_phase" | "skip_to_ceo" | "final_evaluate" | "ceo_complete" | "fail_end" {
+  if (!state.passed) return "fail_end";
+
+  // CEO面接フェーズの完了
+  if (state.currentPhase === "ceo") return "ceo_complete";
 
   // 高スコア（9以上）かつ最終面接以外 → 社長面接スキップ
-  const score = lastResult.score ?? 5;
-  if (score >= 9 && state.currentPhase !== "final") return "skip_to_ceo";
+  if (state.score >= 9 && state.currentPhase !== "final") return "skip_to_ceo";
 
+  // 最終面接通過 → 総合評価
   if (state.currentPhase === "final") return "final_evaluate";
+
+  // 通常合格 → 次のフェーズ
   return "advance_phase";
 }
 
-/** 社長面接にスキップするノード */
-function skipToCeoNode(state: InterviewStateType) {
-  return {
-    currentPhase: "ceo" as InterviewPhase,
-    action: "start_phase",
-  };
-}
-
-/** 次のフェーズに進むノード */
-function advancePhaseNode(state: InterviewStateType) {
+/** 次のフェーズに進む */
+function advancePhaseNode(state: InterviewGraphOutput) {
   const phases: InterviewPhase[] = ["first", "second", "final"];
   const currentIndex = phases.indexOf(state.currentPhase);
   const nextPhase = phases[currentIndex + 1];
 
   return {
-    currentPhase: nextPhase,
-    action: "start_phase",
+    nextPhase,
+    skipToCeo: false,
+    outcome: "advance" as const,
   };
 }
 
-/** 不合格終了ノード */
-function failEndNode(state: InterviewStateType) {
-  const lastResult = state.phaseResults[state.phaseResults.length - 1];
+/** 社長面接にスキップ */
+function skipToCeoNode() {
   return {
-    finalEvaluation: lastResult?.evaluation ?? "不合格となりました。",
-    action: "complete",
+    nextPhase: "ceo" as InterviewPhase,
+    skipToCeo: true,
+    outcome: "skip_to_ceo" as const,
   };
 }
 
-/** 最終評価ノード */
-async function finalEvaluateNode(state: InterviewStateType) {
-  const { companyType, companySize, situation, phaseMessages } = state;
-
-  const finalPrompt = buildFinalEvaluationPrompt(companyType, situation);
-
-  const allConversation = (["first", "second", "final"] as const)
-    .map((p) => {
-      const phaseLabel = PHASE_CONFIG[p].label;
-      const msgs = phaseMessages[p] ?? [];
-      return `## ${phaseLabel}\n${msgs.map((m) => `${m.role === "assistant" ? "面接官" : "候補者"}: ${m.content}`).join("\n\n")}`;
-    })
-    .join("\n\n---\n\n");
-
-  const finalModel = new ChatAnthropic({
-    model: "claude-sonnet-4-6",
-    maxTokens: 500,
-  });
-
-  const response = await finalModel.invoke([
-    { role: "system", content: finalPrompt },
-    {
-      role: "user",
-      content: `以下が全面接のやり取りです:\n\n${allConversation}\n\n総合評価をお願いします。`,
-    },
-  ]);
-
-  const evalText =
-    typeof response.content === "string"
-      ? response.content
-      : response.content
-          .filter((c) => c.type === "text")
-          .map((c) => ("text" in c ? c.text : ""))
-          .join("");
-
+/** 不合格終了 */
+function failEndNode() {
   return {
-    finalEvaluation: evalText,
-    currentResponse: evalText,
-    action: "complete",
+    nextPhase: null,
+    skipToCeo: false,
+    outcome: "fail" as const,
+  };
+}
+
+/** 最終評価へ（通常ルート） */
+function finalEvaluateNode() {
+  return {
+    nextPhase: null,
+    skipToCeo: false,
+    outcome: "final_evaluate" as const,
+  };
+}
+
+/** CEO面接完了 */
+function ceoCompleteNode() {
+  return {
+    nextPhase: null,
+    skipToCeo: false,
+    outcome: "ceo_complete" as const,
   };
 }
 
 // ─── グラフ構築 ───
 
 const builder = new StateGraph(InterviewState)
-  .addNode("interview", interviewNode)
   .addNode("evaluate", evaluateNode)
   .addNode("advance_phase", advancePhaseNode)
   .addNode("skip_to_ceo", skipToCeoNode)
   .addNode("fail_end", failEndNode)
   .addNode("final_evaluate", finalEvaluateNode)
-  .addEdge(START, "interview")
-  .addEdge("interview", END) // ユーザー回答待ち → 一旦停止
+  .addNode("ceo_complete", ceoCompleteNode)
+  .addEdge(START, "evaluate")
   .addConditionalEdges("evaluate", routeAfterEvaluation, [
     "advance_phase",
     "skip_to_ceo",
     "final_evaluate",
+    "ceo_complete",
     "fail_end",
   ])
-  .addEdge("advance_phase", "interview")
-  .addEdge("skip_to_ceo", "interview") // 社長面接へ
+  .addEdge("advance_phase", END)
+  .addEdge("skip_to_ceo", END)
   .addEdge("fail_end", END)
-  .addEdge("final_evaluate", END);
+  .addEdge("final_evaluate", END)
+  .addEdge("ceo_complete", END);
 
 export const interviewGraph = builder.compile();
-
-// ─── ヘルパー関数 ───
-
-/** 面接グラフの初期状態を作成 */
-export function createInitialState(
-  companyType: string,
-  companySize: string,
-  situation: Situation
-): typeof InterviewState.Update {
-  return {
-    companyType,
-    companySize,
-    situation,
-    currentPhase: "first" as InterviewPhase,
-    action: "start_phase",
-  };
-}

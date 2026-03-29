@@ -4,6 +4,10 @@ import { streamText } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { createStreamableValue } from "@ai-sdk/rsc";
 import {
+  interviewGraph,
+  type InterviewGraphOutput,
+} from "@/lib/interview-graph";
+import {
   buildInterviewSystemPrompt,
   buildEvaluationPrompt,
   buildFinalEvaluationPrompt,
@@ -14,15 +18,6 @@ import {
 import type { Situation } from "@/data/situations";
 
 type Message = { role: "user" | "assistant"; content: string };
-
-/** 内部スコアを評価テキストから抽出 */
-function extractScore(text: string): number {
-  const match = text.match(/内部スコア:\s*(\d+)\s*\/\s*10/);
-  return match ? parseInt(match[1], 10) : 5;
-}
-
-/** 社長面接スキップの閾値 */
-const CEO_SKIP_THRESHOLD = 9;
 
 /** 面接官の発言をストリーミング生成 */
 export async function chat(
@@ -43,7 +38,6 @@ export async function chat(
 
   (async () => {
     try {
-      // 空メッセージの場合は面接開始の合図を送る
       const apiMessages =
         messages.length > 0
           ? messages.map((m) => ({ role: m.role, content: m.content }))
@@ -69,21 +63,25 @@ export async function chat(
   return { text: stream.value };
 }
 
+/** LangGraphで判定した結果の型 */
 export type EvaluateResult = {
   passed: boolean;
   score: number;
   nextPhase: InterviewPhase | null;
   skipToCeo: boolean;
+  outcome: "advance" | "skip_to_ceo" | "final_evaluate" | "ceo_complete" | "fail";
 };
 
-/** フェーズ評価をストリーミング生成し、合否判定 + スコア + 社長スキップ判定を返す */
+/**
+ * フェーズ評価をストリーミング生成し、
+ * LangGraphのグラフを実行して条件エッジで次の行き先を判定する。
+ */
 export async function evaluate(
   phase: InterviewPhase,
   companyType: string,
   companySize: string,
   situation: Situation,
-  messages: Message[],
-  allPhaseResults: { phase: string; passed: boolean }[]
+  messages: Message[]
 ) {
   const evalPrompt = buildEvaluationPrompt(phase, companyType, situation);
 
@@ -110,30 +108,23 @@ export async function evaluate(
         stream.append(chunk);
       }
 
-      const passed = fullText.includes("【通過】");
-      const score = extractScore(fullText);
-
-      // LangGraphの条件エッジロジック
-      let nextPhase: InterviewPhase | null = null;
-      let skipToCeo = false;
-
-      if (passed) {
-        // 高スコア → 社長面接にスキップ（最終面接以外）
-        if (score >= CEO_SKIP_THRESHOLD && phase !== "final") {
-          skipToCeo = true;
-          nextPhase = "ceo";
-        } else {
-          const phases: InterviewPhase[] = ["first", "second", "final"];
-          const currentIndex = phases.indexOf(phase);
-          if (currentIndex < phases.length - 1) {
-            nextPhase = phases[currentIndex + 1];
-          }
-          // final で通過 → nextPhase = null → 最終評価へ
-        }
-      }
+      // LangGraphのグラフを実行して条件エッジで分岐判定
+      const graphResult: InterviewGraphOutput = await interviewGraph.invoke({
+        companyType,
+        companySize,
+        situation,
+        currentPhase: phase,
+        evaluationText: fullText,
+      });
 
       stream.done();
-      resultPromise.update({ passed, score, nextPhase, skipToCeo });
+      resultPromise.update({
+        passed: graphResult.passed,
+        score: graphResult.score,
+        nextPhase: graphResult.nextPhase,
+        skipToCeo: graphResult.skipToCeo,
+        outcome: graphResult.outcome,
+      });
       resultPromise.done();
     } catch (e) {
       stream.error(e instanceof Error ? e : new Error("Stream failed"));
@@ -146,7 +137,7 @@ export async function evaluate(
   return { text: stream.value, result: resultPromise.value };
 }
 
-/** 社長面接の評価をストリーミング生成 */
+/** 社長面接の評価をストリーミング生成 → LangGraphで判定 */
 export async function ceoEvaluate(
   companyType: string,
   companySize: string,
@@ -196,8 +187,7 @@ export async function finalEvaluate(
   const phases = Object.keys(allMessages);
   const allConversation = phases
     .map((p) => {
-      const phaseLabel =
-        PHASE_CONFIG[p as InterviewPhase]?.label ?? p;
+      const phaseLabel = PHASE_CONFIG[p as InterviewPhase]?.label ?? p;
       const msgs = allMessages[p] ?? [];
       return `## ${phaseLabel}\n${msgs.map((m) => `${m.role === "assistant" ? "面接官" : "候補者"}: ${m.content}`).join("\n\n")}`;
     })
