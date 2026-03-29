@@ -50,6 +50,8 @@ export default function InterviewChat({
   const [streamingText, setStreamingText] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
+  const evaluatingRef = useRef(false);
+  const closingRef = useRef(false);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -103,12 +105,25 @@ export default function InterviewChat({
     const { phase, questionIndex } = state;
     const config = PHASE_CONFIG[phase];
 
+    // 最後の回答の場合、面接官に新しい質問をさせないよう指示を追加
+    const isLastAnswer = questionIndex >= config.questionsCount;
+    const chatMessages = isLastAnswer
+      ? [
+          ...newMessages,
+          {
+            role: "user" as const,
+            content:
+              "[システム指示] これが最後の回答です。新しい質問はせず、回答への短い感想だけ1〜2行で返してください。",
+          },
+        ]
+      : newMessages;
+
     const { text } = await chat(
       phase,
       companyType,
       companySize,
       situation,
-      newMessages
+      chatMessages
     );
 
     let accumulated = "";
@@ -127,7 +142,7 @@ export default function InterviewChat({
     setStreamingText("");
     setStreaming(false);
 
-    if (questionIndex >= config.questionsCount) {
+    if (isLastAnswer) {
       setAllMessages((prev) => ({ ...prev, [phase]: updatedMessages }));
       store.savePhaseMessages(phase, updatedMessages);
       setState({ status: "closing", phase });
@@ -143,6 +158,8 @@ export default function InterviewChat({
   // 締めの挨拶（固定テキスト）を表示
   useEffect(() => {
     if (state.status !== "closing") return;
+    if (closingRef.current) return;
+    closingRef.current = true;
 
     setMessages((prev) => [
       ...prev,
@@ -158,12 +175,15 @@ export default function InterviewChat({
   const handleViewResult = () => {
     if (state.status !== "closing") return;
     const { phase } = state;
+    evaluatingRef.current = false;
     setState({ status: "evaluating", phase });
   };
 
   // 評価実行（非ストリーミング → 結果ページへ遷移）
   useEffect(() => {
     if (state.status !== "evaluating") return;
+    if (evaluatingRef.current) return;
+    evaluatingRef.current = true;
 
     const { phase } = state;
     const phaseMessages = allMessages[phase] ?? messages;
