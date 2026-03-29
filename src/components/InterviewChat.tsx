@@ -146,56 +146,33 @@ export default function InterviewChat({
     }
   };
 
-  // 締めの挨拶 → 評価へ
+  // 締めの挨拶（固定テキスト）→ 少し待って評価へ
   useEffect(() => {
     if (state.status !== "closing") return;
 
     const { phase } = state;
-    const closingMessages = allMessages[phase] ?? messages;
 
-    (async () => {
-      setStreaming(true);
-      setStreamingText("");
+    // 固定の締め挨拶を表示
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content:
+          "本日はお時間いただきありがとうございました。結果は追ってご連絡いたします。",
+      },
+    ]);
 
-      // 面接官に締めの挨拶をさせる
-      const closingPromptMessages = [
-        ...closingMessages,
-        {
-          role: "user" as const,
-          content: "[システム指示] 面接の全質問が終了しました。候補者に「本日はありがとうございました。結果は追ってご連絡します。」のような自然な締めの挨拶をしてください。1〜2行で簡潔に。",
-        },
-      ];
-
-      const { text } = await chat(
-        phase,
-        companyType,
-        companySize,
-        situation,
-        closingPromptMessages
-      );
-
-      let accumulated = "";
-      for await (const chunk of readStreamableValue(text)) {
-        if (chunk) {
-          accumulated = chunk;
-          setStreamingText(accumulated);
-        }
-      }
-
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: accumulated },
-      ]);
-      setStreamingText("");
-      setStreaming(false);
-
+    // 少し間を置いてから評価へ遷移
+    const timer = setTimeout(() => {
       if (phase === "ceo") {
         setState({ status: "ceo-evaluating" });
       } else {
         setState({ status: "evaluating", phase });
       }
-    })();
-  }, [state, allMessages, messages, companyType, companySize, situation]);
+    }, 2000);
+
+    return () => clearTimeout(timer);
+  }, [state]);
 
   // 評価実行（非ストリーミング → 結果ページへ遷移）
   useEffect(() => {
@@ -225,6 +202,7 @@ export default function InterviewChat({
             phase: PHASE_CONFIG[phase].label,
             evaluation: resultData.evaluation,
           });
+          router.push("/result");
           break;
         case "skip_to_ceo":
           store.setResult({
@@ -234,7 +212,24 @@ export default function InterviewChat({
             nextPhase: "ceo",
             skipToCeo: true,
           });
+          router.push("/result");
           break;
+        case "final_evaluate": {
+          // 最終面接通過 → 直接最終評価を実行
+          const finalEvalText = await finalEvaluate(
+            companyType,
+            companySize,
+            situation,
+            { ...allMessages, [phase]: phaseMessages }
+          );
+          store.setResult({
+            status: "complete",
+            phase: "総合",
+            evaluation: finalEvalText,
+          });
+          router.push("/result");
+          break;
+        }
         default:
           store.setResult({
             status: "passed",
@@ -242,9 +237,9 @@ export default function InterviewChat({
             evaluation: resultData.evaluation,
             nextPhase: resultData.nextPhase,
           });
+          router.push("/result");
           break;
       }
-      router.push("/result");
     })();
   }, [state, allMessages, messages, companyType, companySize, situation, store, router]);
 
