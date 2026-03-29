@@ -3,11 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { readStreamableValue } from "@ai-sdk/rsc";
-import {
-  chat,
-  evaluate,
-  finalEvaluate,
-} from "@/app/actions/interview";
+import { chat } from "@/app/actions/interview";
 import { PHASE_CONFIG, PHASES_ORDER, type InterviewPhase } from "@/data/prompts";
 import type { Situation } from "@/data/situations";
 import { useInterviewStore } from "@/store/interview";
@@ -18,9 +14,7 @@ type Message = { role: "user" | "assistant"; content: string };
 
 type InterviewState =
   | { status: "interviewing"; phase: InterviewPhase; questionIndex: number }
-  | { status: "closing"; phase: InterviewPhase }
-  | { status: "evaluating"; phase: InterviewPhase }
-;
+  | { status: "closing"; phase: InterviewPhase };
 
 type Props = {
   companyType: string;
@@ -50,7 +44,6 @@ export default function InterviewChat({
   const [streamingText, setStreamingText] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
-  const evaluatingRef = useRef(false);
   const closingRef = useRef(false);
 
   const scrollToBottom = useCallback(() => {
@@ -162,91 +155,21 @@ export default function InterviewChat({
     ]);
   }, [state]);
 
-  // 「結果を見る」ボタン押下 → 評価実行
+  // 「結果を見る」ボタン押下 → 結果ページに遷移して評価実行
   const handleViewResult = () => {
     if (state.status !== "closing") return;
     const { phase } = state;
-    evaluatingRef.current = false;
-    setState({ status: "evaluating", phase });
+    // 結果ページで評価を実行するためにフェーズ情報をstoreに保存
+    store.setResult({
+      status: "evaluating" as "passed",
+      phase: PHASE_CONFIG[phase].label,
+      evaluation: "",
+    });
+    router.push("/result");
   };
 
-  // 評価実行（非ストリーミング → 結果ページへ遷移）
-  useEffect(() => {
-    if (state.status !== "evaluating") return;
-    if (evaluatingRef.current) return;
-    evaluatingRef.current = true;
-
-    const { phase } = state;
-    const phaseMessages = allMessages[phase] ?? messages;
-
-    (async () => {
-      setStreaming(true);
-
-      const resultData = await evaluate(
-        phase,
-        companyType,
-        companySize,
-        situation,
-        phaseMessages
-      );
-
-      setStreaming(false);
-
-      // LangGraphの条件エッジによる分岐結果をstoreに保存して結果ページへ
-      switch (resultData.outcome) {
-        case "fail":
-          store.setResult({
-            status: "failed",
-            phase: PHASE_CONFIG[phase].label,
-            evaluation: resultData.evaluation,
-          });
-          router.push("/result");
-          break;
-        case "skip_to_ceo":
-          store.setResult({
-            status: "passed",
-            phase: PHASE_CONFIG[phase].label,
-            evaluation: resultData.evaluation,
-            nextPhase: "ceo",
-            skipToCeo: true,
-          });
-          router.push("/result");
-          break;
-        case "final_evaluate":
-        case "ceo_complete": {
-          // 最終面接 or CEO面接通過 → 直接最終評価を実行
-          const finalEvalText = await finalEvaluate(
-            companyType,
-            companySize,
-            situation,
-            { ...allMessages, [phase]: phaseMessages }
-          );
-          store.setResult({
-            status: "complete",
-            phase: "総合",
-            evaluation: finalEvalText,
-            isCeoRoute: resultData.outcome === "ceo_complete",
-          });
-          router.push("/result");
-          break;
-        }
-        default:
-          store.setResult({
-            status: "passed",
-            phase: PHASE_CONFIG[phase].label,
-            evaluation: resultData.evaluation,
-            nextPhase: resultData.nextPhase,
-          });
-          router.push("/result");
-          break;
-      }
-    })();
-  }, [state, allMessages, messages, companyType, companySize, situation, store, router]);
-
   const currentPhase =
-    state.status === "interviewing" ||
-    state.status === "closing" ||
-    state.status === "evaluating"
+    state.status === "interviewing" || state.status === "closing"
       ? state.phase
       : "final";
 
@@ -477,14 +400,6 @@ export default function InterviewChat({
         </div>
       )}
 
-      {/* 評価中のローディング */}
-      {state.status === "evaluating" && (
-        <div className="border-t bg-card px-4 py-4 text-center">
-          <p className="text-sm text-muted-foreground animate-pulse">
-            評価中です...
-          </p>
-        </div>
-      )}
     </div>
   );
 }

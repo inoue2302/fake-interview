@@ -15,7 +15,7 @@ type InterviewStore = {
   allMessages: Record<string, Message[]>;
 
   // 結果
-  resultStatus: "passed" | "failed" | "complete" | null;
+  resultStatus: "passed" | "failed" | "complete" | "evaluating" | null;
   resultPhase: string;
   evaluation: string;
   nextPhase: InterviewPhase | null;
@@ -31,7 +31,7 @@ type InterviewStore = {
   setCurrentPhase: (phase: InterviewPhase) => void;
   savePhaseMessages: (phase: string, messages: Message[]) => void;
   setResult: (result: {
-    status: "passed" | "failed" | "complete";
+    status: "passed" | "failed" | "complete" | "evaluating";
     phase: string;
     evaluation: string;
     nextPhase?: InterviewPhase | null;

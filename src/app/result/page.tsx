@@ -1,8 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useRef } from "react";
 import confetti from "canvas-confetti";
+import { evaluate, finalEvaluate } from "@/app/actions/interview";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PHASE_CONFIG, type InterviewPhase } from "@/data/prompts";
@@ -10,6 +11,7 @@ import { useInterviewStore } from "@/store/interview";
 
 export default function ResultPage() {
   const router = useRouter();
+  const store = useInterviewStore();
   const {
     resultStatus,
     resultPhase,
@@ -17,8 +19,88 @@ export default function ResultPage() {
     nextPhase,
     skipToCeo,
     isCeoRoute,
+    companyType,
+    companySize,
+    situation,
+    allMessages,
+    currentPhase,
     setCurrentPhase,
-  } = useInterviewStore();
+    setResult,
+  } = store;
+
+  const evaluatingRef = useRef(false);
+
+  // evaluating → 評価を実行して結果を表示
+  useEffect(() => {
+    if (resultStatus !== "evaluating") return;
+    if (evaluatingRef.current) return;
+    if (!situation) return;
+    evaluatingRef.current = true;
+
+    const phase = currentPhase;
+    const phaseMessages = allMessages[phase] ?? [];
+
+    (async () => {
+      const resultData = await evaluate(
+        phase,
+        companyType,
+        companySize,
+        situation,
+        phaseMessages
+      );
+
+      switch (resultData.outcome) {
+        case "fail":
+          setResult({
+            status: "failed",
+            phase: PHASE_CONFIG[phase].label,
+            evaluation: resultData.evaluation,
+          });
+          break;
+        case "skip_to_ceo":
+          setResult({
+            status: "passed",
+            phase: PHASE_CONFIG[phase].label,
+            evaluation: resultData.evaluation,
+            nextPhase: "ceo",
+            skipToCeo: true,
+          });
+          break;
+        case "final_evaluate":
+        case "ceo_complete": {
+          const finalEvalText = await finalEvaluate(
+            companyType,
+            companySize,
+            situation,
+            { ...allMessages, [phase]: phaseMessages }
+          );
+          setResult({
+            status: "complete",
+            phase: "総合",
+            evaluation: finalEvalText,
+            isCeoRoute: resultData.outcome === "ceo_complete",
+          });
+          break;
+        }
+        default:
+          setResult({
+            status: "passed",
+            phase: PHASE_CONFIG[phase].label,
+            evaluation: resultData.evaluation,
+            nextPhase: resultData.nextPhase,
+          });
+          break;
+      }
+    })();
+  }, [
+    resultStatus,
+    currentPhase,
+    companyType,
+    companySize,
+    situation,
+    allMessages,
+    setResult,
+  ]);
 
   useEffect(() => {
     if (!resultStatus) {
@@ -64,6 +146,21 @@ export default function ResultPage() {
     }
   }, [isAccepted, fireConfetti]);
 
+  // ローディング中
+  if (resultStatus === "evaluating") {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen px-4">
+        <div className="text-center">
+          <div className="text-5xl mb-6 animate-bounce">📝</div>
+          <h1 className="text-2xl font-extrabold mb-2">評価中...</h1>
+          <p className="text-muted-foreground text-sm">
+            面接内容を確認しています
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (!resultStatus || !evaluation) return null;
 
   const isFailed = resultStatus === "failed";
@@ -74,11 +171,6 @@ export default function ResultPage() {
     if (!nextPhase) return;
     setCurrentPhase(nextPhase);
     router.push("/interview");
-  };
-
-  const handleFinalEvaluate = () => {
-    setCurrentPhase("final");
-    router.push("/interview?final=true");
   };
 
   return (
@@ -184,15 +276,6 @@ export default function ResultPage() {
               {skipToCeo
                 ? "⭐ 社長面接へ"
                 : `${PHASE_CONFIG[nextPhase].label}へ進む`}
-            </Button>
-          )}
-
-          {isPassed && !nextPhase && (
-            <Button
-              onClick={handleFinalEvaluate}
-              className="rounded-full bg-gradient-to-r from-orange-400 via-pink-500 to-violet-500 text-white px-8 py-5 font-bold border-none shadow-lg shadow-pink-200/50"
-            >
-              最終結果を見る
             </Button>
           )}
 
