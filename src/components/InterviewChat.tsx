@@ -582,7 +582,9 @@ export default function InterviewChat({
           <div className="flex gap-2">
             <textarea
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                if (e.target.value.length <= 200) setInput(e.target.value);
+              }}
               onKeyDown={handleKeyDown}
               placeholder="回答を入力..."
               disabled={streaming}
@@ -597,9 +599,14 @@ export default function InterviewChat({
               送信
             </Button>
           </div>
-          <p className="text-[10px] text-muted-foreground mt-1.5 text-center">
-            Enterで送信 / Shift+Enterで改行
-          </p>
+          <div className="flex justify-between mt-1.5">
+            <p className="text-[10px] text-muted-foreground">
+              Enterで送信 / Shift+Enterで改行
+            </p>
+            <p className={`text-[10px] ${input.length >= 180 ? "text-red-400" : "text-muted-foreground"}`}>
+              {input.length}/200
+            </p>
+          </div>
         </div>
       )}
     </div>
