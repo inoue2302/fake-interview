@@ -311,13 +311,6 @@ export default function InterviewChat({
     })();
   }, [state, allMessages, companyType, companySize, situation]);
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   const currentPhase =
     state.status === "interviewing" || state.status === "evaluating"
       ? state.phase
@@ -592,7 +585,6 @@ export default function InterviewChat({
                 onChange={(e) => {
                   if (e.target.value.length <= 250) setInput(e.target.value);
                 }}
-                onKeyDown={handleKeyDown}
                 maxLength={250}
                 disabled={streaming}
                 rows={3}
@@ -621,7 +613,7 @@ export default function InterviewChat({
             )}
             <div className="flex justify-between">
               <p className="text-[10px] text-muted-foreground">
-                Enterで送信 / Shift+Enterで改行
+                送信ボタンで回答
               </p>
               {input.length > 0 && (
                 <p className={`text-[10px] ${input.length > 200 ? "text-red-400" : "text-muted-foreground"}`}>
