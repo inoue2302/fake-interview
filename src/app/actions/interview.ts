@@ -43,10 +43,16 @@ export async function chat(
 
   (async () => {
     try {
+      // 空メッセージの場合は面接開始の合図を送る
+      const apiMessages =
+        messages.length > 0
+          ? messages.map((m) => ({ role: m.role, content: m.content }))
+          : [{ role: "user" as const, content: "面接よろしくお願いします。" }];
+
       const { textStream } = streamText({
         model: anthropic("claude-sonnet-4-6"),
         system: systemPrompt,
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        messages: apiMessages,
         maxOutputTokens: 300,
       });
 

@@ -579,34 +579,57 @@ export default function InterviewChat({
       {/* 入力エリア */}
       {state.status === "interviewing" && (
         <div className="border-t bg-card px-4 py-3">
-          <div className="flex gap-2">
-            <textarea
-              value={input}
-              onChange={(e) => {
-                if (e.target.value.length <= 200) setInput(e.target.value);
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder="回答を入力..."
-              disabled={streaming}
-              rows={1}
-              className="flex-1 resize-none rounded-xl border bg-background px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-pink-300 disabled:opacity-50"
-            />
-            <Button
-              onClick={handleSend}
-              disabled={streaming || !input.trim()}
-              className="rounded-xl bg-pink-500 hover:bg-pink-600 text-white border-none px-4"
-            >
-              送信
-            </Button>
-          </div>
-          <div className="flex justify-between mt-1.5">
-            <p className="text-[10px] text-muted-foreground">
-              Enterで送信 / Shift+Enterで改行
-            </p>
-            <p className={`text-[10px] ${input.length >= 180 ? "text-red-400" : "text-muted-foreground"}`}>
-              {input.length}/200
-            </p>
-          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSend();
+            }}
+            className="flex flex-col gap-1.5"
+          >
+            <div className="relative">
+              <textarea
+                value={input}
+                onChange={(e) => {
+                  if (e.target.value.length <= 250) setInput(e.target.value);
+                }}
+                onKeyDown={handleKeyDown}
+                maxLength={250}
+                disabled={streaming}
+                rows={3}
+                placeholder={streaming ? "応答を待っています..." : "回答を入力..."}
+                className={`w-full resize-none rounded-xl border bg-background px-4 py-3 pr-14 text-sm leading-relaxed placeholder:text-muted-foreground/40 focus:outline-none transition-all ${
+                  input.length > 200
+                    ? "border-red-400 focus:ring-2 focus:ring-red-300"
+                    : "border-border focus:ring-2 focus:ring-pink-300"
+                } disabled:opacity-50`}
+              />
+              <button
+                type="submit"
+                disabled={streaming || !input.trim() || input.length > 200}
+                className="absolute right-2 top-2 rounded-lg bg-pink-500 p-2 text-white transition-all hover:bg-pink-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                aria-label="送信"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                  <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
+                </svg>
+              </button>
+            </div>
+            {input.length > 200 && (
+              <p className="text-xs text-red-400">
+                200文字以内で入力してください
+              </p>
+            )}
+            <div className="flex justify-between">
+              <p className="text-[10px] text-muted-foreground">
+                Enterで送信 / Shift+Enterで改行
+              </p>
+              {input.length > 0 && (
+                <p className={`text-[10px] ${input.length > 200 ? "text-red-400" : "text-muted-foreground"}`}>
+                  {input.length}/200
+                </p>
+              )}
+            </div>
+          </form>
         </div>
       )}
     </div>
