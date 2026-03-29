@@ -40,27 +40,40 @@ export default function SelectionForm() {
   return (
     <div className="w-full max-w-2xl mx-auto px-4">
       {/* ステップインジケーター */}
-      <div className="flex items-center justify-center gap-2 mb-10">
+      <div className="flex items-center justify-center gap-0 mb-10">
         {STEP_LABELS.map((label, i) => {
           const isActive = currentIndex >= i;
           const isCurrent = currentIndex === i;
           return (
-            <div key={label} className="flex items-center gap-2">
+            <div key={label} className="flex items-center">
               {i > 0 && (
                 <div
-                  className={`w-8 h-0.5 rounded-full transition-colors ${isActive ? "bg-pink-400" : "bg-muted"}`}
+                  className={`w-10 h-0.5 transition-colors ${isActive ? "bg-pink-400" : "bg-muted"}`}
                 />
               )}
-              <div
-                className={`text-sm font-bold transition-colors ${
-                  isCurrent
-                    ? "text-pink-500"
-                    : isActive
-                      ? "text-foreground"
-                      : "text-muted-foreground/40"
-                }`}
-              >
-                {label}
+              <div className="flex flex-col items-center gap-1">
+                <div
+                  className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-all ${
+                    isCurrent
+                      ? "bg-pink-500 text-white shadow-md shadow-pink-200"
+                      : isActive
+                        ? "bg-pink-100 text-pink-600"
+                        : "bg-muted text-muted-foreground/40"
+                  }`}
+                >
+                  {i + 1}
+                </div>
+                <span
+                  className={`text-[10px] font-bold transition-colors ${
+                    isCurrent
+                      ? "text-pink-500"
+                      : isActive
+                        ? "text-foreground"
+                        : "text-muted-foreground/40"
+                  }`}
+                >
+                  {label}
+                </span>
               </div>
             </div>
           );
