@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useCallback } from "react";
+import confetti from "canvas-confetti";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PHASE_CONFIG, type InterviewPhase } from "@/data/prompts";
@@ -24,6 +25,44 @@ export default function ResultPage() {
       router.replace("/");
     }
   }, [resultStatus, router]);
+
+  const isAccepted =
+    resultStatus === "complete" &&
+    (evaluation.includes("【内定】") ||
+      evaluation.includes("【特別内定】"));
+
+  const fireConfetti = useCallback(() => {
+    const duration = 3000;
+    const end = Date.now() + duration;
+
+    const frame = () => {
+      confetti({
+        particleCount: 3,
+        angle: 60,
+        spread: 55,
+        origin: { x: 0, y: 0.7 },
+        colors: ["#ff6b9d", "#c084fc", "#fb923c", "#fbbf24"],
+      });
+      confetti({
+        particleCount: 3,
+        angle: 120,
+        spread: 55,
+        origin: { x: 1, y: 0.7 },
+        colors: ["#ff6b9d", "#c084fc", "#fb923c", "#fbbf24"],
+      });
+
+      if (Date.now() < end) {
+        requestAnimationFrame(frame);
+      }
+    };
+    frame();
+  }, []);
+
+  useEffect(() => {
+    if (isAccepted) {
+      fireConfetti();
+    }
+  }, [isAccepted, fireConfetti]);
 
   if (!resultStatus || !evaluation) return null;
 
