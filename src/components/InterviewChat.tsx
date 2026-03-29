@@ -3,7 +3,13 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { readStreamableValue } from "@ai-sdk/rsc";
-import { chat, evaluate, finalEvaluate } from "@/app/actions/interview";
+import {
+  chat,
+  evaluate,
+  finalEvaluate,
+  ceoEvaluate,
+  type EvaluateResult,
+} from "@/app/actions/interview";
 import { PHASE_CONFIG, PHASES_ORDER, type InterviewPhase } from "@/data/prompts";
 import type { Situation } from "@/data/situations";
 import { Button } from "@/components/ui/button";
@@ -14,16 +20,20 @@ type Message = { role: "user" | "assistant"; content: string };
 type PhaseResultData = {
   evaluation: string;
   passed: boolean;
+  score: number;
   nextPhase: InterviewPhase | null;
+  skipToCeo: boolean;
 };
 
 type InterviewState =
   | { status: "interviewing"; phase: InterviewPhase; questionIndex: number }
   | { status: "evaluating"; phase: InterviewPhase }
   | { status: "phase-result"; phase: InterviewPhase; result: PhaseResultData }
+  | { status: "ceo-skip-announcement"; fromPhase: InterviewPhase; score: number; evaluation: string }
   | { status: "final-evaluating" }
+  | { status: "ceo-evaluating" }
   | { status: "failed"; phase: InterviewPhase; evaluation: string }
-  | { status: "complete"; finalEvaluation: string };
+  | { status: "complete"; finalEvaluation: string; isCeoRoute: boolean };
 
 type Props = {
   companyType: string;
@@ -61,7 +71,6 @@ export default function InterviewChat({
     scrollToBottom();
   }, [messages, streamingText, scrollToBottom]);
 
-  // フェーズ開始時の面接官の最初の発言
   const startPhase = useCallback(
     async (phase: InterviewPhase) => {
       setStreaming(true);
@@ -131,7 +140,11 @@ export default function InterviewChat({
 
     if (questionIndex >= config.questionsCount) {
       setAllMessages((prev) => ({ ...prev, [phase]: updatedMessages }));
-      setState({ status: "evaluating", phase });
+      if (phase === "ceo") {
+        setState({ status: "ceo-evaluating" });
+      } else {
+        setState({ status: "evaluating", phase });
+      }
     } else {
       setState({
         status: "interviewing",
@@ -141,7 +154,7 @@ export default function InterviewChat({
     }
   };
 
-  // 評価実行（LangGraphの条件エッジで合否分岐）
+  // 評価実行
   useEffect(() => {
     if (state.status !== "evaluating") return;
 
@@ -161,7 +174,6 @@ export default function InterviewChat({
         phaseResults
       );
 
-      // ストリーミングで評価テキストを表示
       let evalText = "";
       for await (const chunk of readStreamableValue(text)) {
         if (chunk) {
@@ -170,10 +182,11 @@ export default function InterviewChat({
         }
       }
 
-      // 合否結果を取得
-      let resultData: { passed: boolean; nextPhase: InterviewPhase | null } = {
+      let resultData: EvaluateResult = {
         passed: false,
+        score: 5,
         nextPhase: null,
+        skipToCeo: false,
       };
       for await (const chunk of readStreamableValue(result)) {
         if (chunk) resultData = chunk;
@@ -187,8 +200,15 @@ export default function InterviewChat({
       setStreaming(false);
 
       if (!resultData.passed) {
-        // 条件エッジ: 不合格 → fail_end
         setState({ status: "failed", phase, evaluation: evalText });
+      } else if (resultData.skipToCeo) {
+        // 高スコア → 社長面接スキップ演出
+        setState({
+          status: "ceo-skip-announcement",
+          fromPhase: phase,
+          score: resultData.score,
+          evaluation: evalText,
+        });
       } else {
         setState({
           status: "phase-result",
@@ -196,7 +216,9 @@ export default function InterviewChat({
           result: {
             evaluation: evalText,
             passed: true,
+            score: resultData.score,
             nextPhase: resultData.nextPhase,
+            skipToCeo: false,
           },
         });
       }
@@ -211,22 +233,25 @@ export default function InterviewChat({
     phaseResults,
   ]);
 
-  // 次のフェーズへ or 最終評価へ
   const handleNextPhase = () => {
     if (state.status !== "phase-result") return;
 
     const { result } = state;
     if (result.nextPhase) {
-      // 条件エッジ: 合格 → advance_phase → 次の面接
       setMessages([]);
       startPhase(result.nextPhase);
     } else {
-      // 条件エッジ: 最終面接通過 → final_evaluate
       setState({ status: "final-evaluating" });
     }
   };
 
-  // 最終評価実行
+  // 社長面接へスキップ
+  const handleSkipToCeo = () => {
+    setMessages([]);
+    startPhase("ceo");
+  };
+
+  // 最終評価
   useEffect(() => {
     if (state.status !== "final-evaluating") return;
 
@@ -251,7 +276,38 @@ export default function InterviewChat({
 
       setStreamingText("");
       setStreaming(false);
-      setState({ status: "complete", finalEvaluation: accumulated });
+      setState({ status: "complete", finalEvaluation: accumulated, isCeoRoute: false });
+    })();
+  }, [state, allMessages, companyType, companySize, situation]);
+
+  // 社長面接の評価
+  useEffect(() => {
+    if (state.status !== "ceo-evaluating") return;
+
+    const ceoMessages = allMessages["ceo"] ?? [];
+
+    (async () => {
+      setStreaming(true);
+      setStreamingText("");
+
+      const { text } = await ceoEvaluate(
+        companyType,
+        companySize,
+        situation,
+        ceoMessages
+      );
+
+      let accumulated = "";
+      for await (const chunk of readStreamableValue(text)) {
+        if (chunk) {
+          accumulated = chunk;
+          setStreamingText(accumulated);
+        }
+      }
+
+      setStreamingText("");
+      setStreaming(false);
+      setState({ status: "complete", finalEvaluation: accumulated, isCeoRoute: true });
     })();
   }, [state, allMessages, companyType, companySize, situation]);
 
@@ -267,9 +323,16 @@ export default function InterviewChat({
       ? state.phase
       : state.status === "phase-result" || state.status === "failed"
         ? state.phase
-        : "final";
+        : state.status === "ceo-skip-announcement"
+          ? state.fromPhase
+          : "final";
 
   const phaseConfig = PHASE_CONFIG[currentPhase];
+
+  // 社長面接中かどうか
+  const isInCeoInterview =
+    state.status === "interviewing" && state.phase === "ceo";
+  const isCeoEval = state.status === "ceo-evaluating";
 
   return (
     <div className="flex flex-col h-screen max-w-3xl mx-auto">
@@ -277,17 +340,29 @@ export default function InterviewChat({
       <header className="border-b bg-card px-4 py-3">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="font-bold text-lg">{phaseConfig.label}</h1>
-            <p className="text-xs text-muted-foreground">
-              {phaseConfig.subtitle} ― {phaseConfig.role}
-            </p>
+            {isInCeoInterview || isCeoEval ? (
+              <>
+                <h1 className="font-bold text-lg">
+                  ⭐ {PHASE_CONFIG.ceo.label}
+                </h1>
+                <p className="text-xs text-muted-foreground">
+                  {PHASE_CONFIG.ceo.subtitle} ― {PHASE_CONFIG.ceo.role}
+                </p>
+              </>
+            ) : (
+              <>
+                <h1 className="font-bold text-lg">{phaseConfig.label}</h1>
+                <p className="text-xs text-muted-foreground">
+                  {phaseConfig.subtitle} ― {phaseConfig.role}
+                </p>
+              </>
+            )}
           </div>
           <div className="flex gap-1">
             {PHASES_ORDER.map((p) => {
               const idx = PHASES_ORDER.indexOf(currentPhase);
               const pIdx = PHASES_ORDER.indexOf(p);
               const isActive = pIdx <= idx;
-              // 不合格フェーズは赤色に
               const isFailed =
                 state.status === "failed" && p === state.phase;
               return (
@@ -303,6 +378,13 @@ export default function InterviewChat({
                 />
               );
             })}
+            {/* 社長面接ルートの場合、特別なインジケーター */}
+            {(isInCeoInterview ||
+              isCeoEval ||
+              state.status === "ceo-skip-announcement" ||
+              (state.status === "complete" && state.isCeoRoute)) && (
+              <div className="w-8 h-1 rounded-full bg-yellow-400" />
+            )}
           </div>
         </div>
       </header>
@@ -343,7 +425,9 @@ export default function InterviewChat({
             >
               {msg.role === "assistant" && (
                 <div className="text-[10px] font-bold text-muted-foreground mb-1">
-                  {phaseConfig.role}
+                  {isInCeoInterview
+                    ? PHASE_CONFIG.ceo.role
+                    : phaseConfig.role}
                 </div>
               )}
               <div className="whitespace-pre-wrap">{msg.content}</div>
@@ -357,9 +441,12 @@ export default function InterviewChat({
             <div className="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed bg-card ring-1 ring-foreground/10 rounded-bl-md">
               <div className="text-[10px] font-bold text-muted-foreground mb-1">
                 {state.status === "evaluating" ||
-                state.status === "final-evaluating"
+                state.status === "final-evaluating" ||
+                state.status === "ceo-evaluating"
                   ? "評価"
-                  : phaseConfig.role}
+                  : isInCeoInterview
+                    ? PHASE_CONFIG.ceo.role
+                    : phaseConfig.role}
               </div>
               <div className="whitespace-pre-wrap">{streamingText}</div>
             </div>
@@ -377,6 +464,34 @@ export default function InterviewChat({
               </div>
             </div>
           </div>
+        )}
+
+        {/* 社長面接スキップ演出 */}
+        {state.status === "ceo-skip-announcement" && (
+          <Card className="bg-gradient-to-r from-yellow-50 to-amber-50 dark:from-yellow-950/20 dark:to-amber-950/20 mt-4 ring-2 ring-yellow-300">
+            <CardContent className="pt-2">
+              <div className="text-xs font-bold text-yellow-600 mb-2">
+                ⭐ 特別選考ルート
+              </div>
+              <div className="text-sm whitespace-pre-wrap leading-relaxed mb-3">
+                {state.evaluation}
+              </div>
+              <div className="bg-yellow-100 dark:bg-yellow-900/30 rounded-lg p-3 text-sm">
+                <p className="font-bold text-yellow-800 dark:text-yellow-300">
+                  あなたの回答が非常に高く評価されました。
+                </p>
+                <p className="text-yellow-700 dark:text-yellow-400 mt-1">
+                  通常の選考フローを飛ばして、社長が直接面接したいとのことです。
+                </p>
+              </div>
+              <Button
+                onClick={handleSkipToCeo}
+                className="mt-4 rounded-full bg-gradient-to-r from-yellow-400 to-amber-500 text-white font-bold border-none shadow-lg shadow-yellow-200/50"
+              >
+                ⭐ 社長面接へ
+              </Button>
+            </CardContent>
+          </Card>
         )}
 
         {/* フェーズ結果（通過） */}
@@ -401,7 +516,7 @@ export default function InterviewChat({
           </Card>
         )}
 
-        {/* フェーズ結果（不合格） */}
+        {/* 不合格 */}
         {state.status === "failed" && (
           <Card className="bg-gradient-to-r from-red-50 to-orange-50 dark:from-red-950/20 dark:to-orange-950/20 mt-4">
             <CardContent className="pt-2">
@@ -429,10 +544,18 @@ export default function InterviewChat({
 
         {/* 最終結果 */}
         {state.status === "complete" && (
-          <Card className="bg-gradient-to-r from-violet-50 to-pink-50 dark:from-violet-950/20 dark:to-pink-950/20 mt-4">
+          <Card
+            className={`mt-4 ${
+              state.isCeoRoute
+                ? "bg-gradient-to-r from-yellow-50 to-amber-50 dark:from-yellow-950/20 dark:to-amber-950/20 ring-2 ring-yellow-300"
+                : "bg-gradient-to-r from-violet-50 to-pink-50 dark:from-violet-950/20 dark:to-pink-950/20"
+            }`}
+          >
             <CardContent className="pt-2">
-              <div className="text-xs font-bold text-violet-500 mb-2">
-                総合評価
+              <div
+                className={`text-xs font-bold mb-2 ${state.isCeoRoute ? "text-yellow-600" : "text-violet-500"}`}
+              >
+                {state.isCeoRoute ? "⭐ 社長からの総合評価" : "総合評価"}
               </div>
               <div className="text-sm whitespace-pre-wrap leading-relaxed">
                 {state.finalEvaluation}

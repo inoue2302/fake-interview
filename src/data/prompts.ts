@@ -1,8 +1,11 @@
 import type { Situation } from "./situations";
 
-export type InterviewPhase = "first" | "second" | "final";
+export type InterviewPhase = "first" | "second" | "final" | "ceo";
 
-export const PHASE_CONFIG = {
+export const PHASE_CONFIG: Record<
+  InterviewPhase,
+  { label: string; subtitle: string; role: string; questionsCount: number }
+> = {
   first: {
     label: "一次面接",
     subtitle: "人事面接",
@@ -21,7 +24,13 @@ export const PHASE_CONFIG = {
     role: "役員",
     questionsCount: 3,
   },
-} as const;
+  ceo: {
+    label: "社長面接",
+    subtitle: "特別面接",
+    role: "社長",
+    questionsCount: 3,
+  },
+};
 
 export const PHASES_ORDER: InterviewPhase[] = ["first", "second", "final"];
 
@@ -81,7 +90,7 @@ export function buildInterviewSystemPrompt(
     situation
   );
 
-  const phaseInstructions = {
+  const phaseInstructions: Record<InterviewPhase, string> = {
     first: `あなたはこの会社の人事担当者です。カルチャーフィットを見極める一次面接を行います。
 以下の観点で質問してください：
 - 志望動機、転職理由
@@ -102,6 +111,14 @@ export function buildInterviewSystemPrompt(
 - 長期的なビジョンや覚悟
 - 会社のミッションとの共感度
 重厚感のある雰囲気で、候補者の本気度を見極めてください。`,
+
+    ceo: `あなたはこの会社の社長です。通常の選考フローを飛び越えて、あなた自ら面接を行うほど興味を持った候補者です。
+最初に「あなたの評判を聞いて、直接話がしたくなった」と伝えてください。
+以下の観点で質問してください：
+- あなたと一緒に会社をどう変えていきたいか
+- 他の会社ではなくうちを選ぶ理由
+- 5年後に何を成し遂げていたいか
+フランクだが熱量のある口調で、候補者のポテンシャルを引き出してください。社長自ら口説くくらいの熱さで。`,
   };
 
   return `あなたは模擬面接の面接官（${config.role}）です。
@@ -134,16 +151,42 @@ export function buildEvaluationPrompt(
 
 会社の求める人材像: ${situation.desiredTrait}
 
-以下の面接のやり取りを踏まえて、短い評価コメントを返してください。
+以下の面接のやり取りを踏まえて、評価を返してください。
+
+## 出力フォーマット（必ずこの形式で）
+1行目: 【通過】または【不通過】
+2行目: 内部スコア: X/10
+3行目以降: 2〜3行の評価コメント
+
+## スコア基準
+- 1〜3: 明らかに準備不足・関係ない話をしている
+- 4〜5: 基本的な受け答えはできるが物足りない
+- 6〜7: 十分な回答で合格ライン
+- 8: かなり優秀、的確で深みのある回答
+- 9〜10: 極めて優秀、即戦力レベル。社長が直接会いたくなるレベル
 
 ## ルール
-- 2〜3行程度のサクッとしたコメント
-- 良かった点と改善点をバランスよく
-- 数値スコアは出さない
 - 面接官のキャラクターを維持した口調で
-- 合否は「通過」か「不通過」で明示する
-- 最初に結果を【通過】または【不通過】で記載する
-- 候補者が面接と関係ない話をしていた場合は即【不通過】とする
+- 候補者が面接と関係ない話をしていた場合は即【不通過】、スコアは1とする
+`;
+}
+
+export function buildCeoEvaluationPrompt(
+  companyType: string,
+  situation: Situation
+): string {
+  const company = COMPANY_TONES[companyType] ?? COMPANY_TONES["startup"];
+
+  return `あなたは${company.label}の社長として、特別面接を行いました。
+通常の選考を飛び越えて直接面接するほどの逸材候補です。
+
+会社の求める人材像: ${situation.desiredTrait}
+
+## ルール
+- 3〜4行の総合コメント
+- 社長として熱量のあるコメントを
+- 最終結果を【特別内定】または【内定】または【不採用】で明示する
+- 【特別内定】は特に優秀な場合のみ（好条件オファーをにおわせる）
 `;
 }
 

@@ -7,12 +7,22 @@ import {
   buildInterviewSystemPrompt,
   buildEvaluationPrompt,
   buildFinalEvaluationPrompt,
+  buildCeoEvaluationPrompt,
   PHASE_CONFIG,
   type InterviewPhase,
 } from "@/data/prompts";
 import type { Situation } from "@/data/situations";
 
 type Message = { role: "user" | "assistant"; content: string };
+
+/** 内部スコアを評価テキストから抽出 */
+function extractScore(text: string): number {
+  const match = text.match(/内部スコア:\s*(\d+)\s*\/\s*10/);
+  return match ? parseInt(match[1], 10) : 5;
+}
+
+/** 社長面接スキップの閾値 */
+const CEO_SKIP_THRESHOLD = 9;
 
 /** 面接官の発言をストリーミング生成 */
 export async function chat(
@@ -53,7 +63,14 @@ export async function chat(
   return { text: stream.value };
 }
 
-/** フェーズ評価をストリーミング生成し、合否判定も返す */
+export type EvaluateResult = {
+  passed: boolean;
+  score: number;
+  nextPhase: InterviewPhase | null;
+  skipToCeo: boolean;
+};
+
+/** フェーズ評価をストリーミング生成し、合否判定 + スコア + 社長スキップ判定を返す */
 export async function evaluate(
   phase: InterviewPhase,
   companyType: string,
@@ -65,10 +82,7 @@ export async function evaluate(
   const evalPrompt = buildEvaluationPrompt(phase, companyType, situation);
 
   const stream = createStreamableValue("");
-  const resultPromise = createStreamableValue<{
-    passed: boolean;
-    nextPhase: InterviewPhase | null;
-  } | null>(null);
+  const resultPromise = createStreamableValue<EvaluateResult | null>(null);
 
   (async () => {
     try {
@@ -90,23 +104,30 @@ export async function evaluate(
         stream.append(chunk);
       }
 
-      // LangGraphの条件エッジロジック: 合否判定
       const passed = fullText.includes("【通過】");
+      const score = extractScore(fullText);
 
-      // 次のフェーズを判定（グラフの条件エッジに相当）
+      // LangGraphの条件エッジロジック
       let nextPhase: InterviewPhase | null = null;
+      let skipToCeo = false;
+
       if (passed) {
-        const phases: InterviewPhase[] = ["first", "second", "final"];
-        const currentIndex = phases.indexOf(phase);
-        if (currentIndex < phases.length - 1) {
-          nextPhase = phases[currentIndex + 1];
+        // 高スコア → 社長面接にスキップ（最終面接以外）
+        if (score >= CEO_SKIP_THRESHOLD && phase !== "final") {
+          skipToCeo = true;
+          nextPhase = "ceo";
+        } else {
+          const phases: InterviewPhase[] = ["first", "second", "final"];
+          const currentIndex = phases.indexOf(phase);
+          if (currentIndex < phases.length - 1) {
+            nextPhase = phases[currentIndex + 1];
+          }
+          // final で通過 → nextPhase = null → 最終評価へ
         }
-        // final で通過 → nextPhase = null → 最終評価へ
       }
-      // 不通過 → nextPhase = null, passed = false → 不合格END
 
       stream.done();
-      resultPromise.update({ passed, nextPhase });
+      resultPromise.update({ passed, score, nextPhase, skipToCeo });
       resultPromise.done();
     } catch (e) {
       stream.error(e instanceof Error ? e : new Error("Stream failed"));
@@ -119,6 +140,44 @@ export async function evaluate(
   return { text: stream.value, result: resultPromise.value };
 }
 
+/** 社長面接の評価をストリーミング生成 */
+export async function ceoEvaluate(
+  companyType: string,
+  companySize: string,
+  situation: Situation,
+  ceoMessages: Message[]
+) {
+  const ceoPrompt = buildCeoEvaluationPrompt(companyType, situation);
+
+  const stream = createStreamableValue("");
+
+  (async () => {
+    try {
+      const { textStream } = streamText({
+        model: anthropic("claude-sonnet-4-6"),
+        system: ceoPrompt,
+        messages: [
+          {
+            role: "user",
+            content: `以下が社長面接のやり取りです:\n\n${ceoMessages.map((m) => `${m.role === "assistant" ? "社長" : "候補者"}: ${m.content}`).join("\n\n")}\n\n評価をお願いします。`,
+          },
+        ],
+        maxOutputTokens: 500,
+      });
+
+      for await (const chunk of textStream) {
+        stream.append(chunk);
+      }
+
+      stream.done();
+    } catch (e) {
+      stream.error(e instanceof Error ? e : new Error("Stream failed"));
+    }
+  })();
+
+  return { text: stream.value };
+}
+
 /** 最終評価をストリーミング生成 */
 export async function finalEvaluate(
   companyType: string,
@@ -128,9 +187,11 @@ export async function finalEvaluate(
 ) {
   const finalPrompt = buildFinalEvaluationPrompt(companyType, situation);
 
-  const allConversation = (["first", "second", "final"] as const)
+  const phases = Object.keys(allMessages);
+  const allConversation = phases
     .map((p) => {
-      const phaseLabel = PHASE_CONFIG[p].label;
+      const phaseLabel =
+        PHASE_CONFIG[p as InterviewPhase]?.label ?? p;
       const msgs = allMessages[p] ?? [];
       return `## ${phaseLabel}\n${msgs.map((m) => `${m.role === "assistant" ? "面接官" : "候補者"}: ${m.content}`).join("\n\n")}`;
     })

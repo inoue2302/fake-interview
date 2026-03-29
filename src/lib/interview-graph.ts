@@ -17,6 +17,7 @@ export type PhaseResult = {
   phase: InterviewPhase;
   evaluation: string;
   passed: boolean;
+  score?: number;
 };
 
 const InterviewState = Annotation.Root({
@@ -144,21 +145,38 @@ async function evaluateNode(state: InterviewStateType) {
   // 【通過】を含むか判定
   const passed = evalText.includes("【通過】");
 
+  // 内部スコアを抽出
+  const scoreMatch = evalText.match(/内部スコア:\s*(\d+)\s*\/\s*10/);
+  const score = scoreMatch ? parseInt(scoreMatch[1], 10) : 5;
+
   return {
-    phaseResults: [{ phase: currentPhase, evaluation: evalText, passed }],
+    phaseResults: [{ phase: currentPhase, evaluation: evalText, passed, score }],
     currentResponse: evalText,
     action: passed ? "next" : "fail",
   };
 }
 
-/** 合否による分岐ルーター */
+/** 合否 + スコアによる分岐ルーター（LangGraphの条件エッジ） */
 function routeAfterEvaluation(
   state: InterviewStateType
-): "advance_phase" | "final_evaluate" | "fail_end" {
+): "advance_phase" | "final_evaluate" | "fail_end" | "skip_to_ceo" {
   const lastResult = state.phaseResults[state.phaseResults.length - 1];
   if (!lastResult?.passed) return "fail_end";
+
+  // 高スコア（9以上）かつ最終面接以外 → 社長面接スキップ
+  const score = lastResult.score ?? 5;
+  if (score >= 9 && state.currentPhase !== "final") return "skip_to_ceo";
+
   if (state.currentPhase === "final") return "final_evaluate";
   return "advance_phase";
+}
+
+/** 社長面接にスキップするノード */
+function skipToCeoNode(state: InterviewStateType) {
+  return {
+    currentPhase: "ceo" as InterviewPhase,
+    action: "start_phase",
+  };
 }
 
 /** 次のフェーズに進むノード */
@@ -230,17 +248,19 @@ const builder = new StateGraph(InterviewState)
   .addNode("interview", interviewNode)
   .addNode("evaluate", evaluateNode)
   .addNode("advance_phase", advancePhaseNode)
+  .addNode("skip_to_ceo", skipToCeoNode)
   .addNode("fail_end", failEndNode)
   .addNode("final_evaluate", finalEvaluateNode)
   .addEdge(START, "interview")
   .addEdge("interview", END) // ユーザー回答待ち → 一旦停止
-  .addEdge("evaluate", END) // 評価後 → 一旦停止（クライアントが結果表示後に再開）
   .addConditionalEdges("evaluate", routeAfterEvaluation, [
     "advance_phase",
+    "skip_to_ceo",
     "final_evaluate",
     "fail_end",
   ])
   .addEdge("advance_phase", "interview")
+  .addEdge("skip_to_ceo", "interview") // 社長面接へ
   .addEdge("fail_end", END)
   .addEdge("final_evaluate", END);
 
