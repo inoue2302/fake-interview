@@ -2,6 +2,8 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { readStreamableValue } from "@ai-sdk/rsc";
+import { chat, evaluate, finalEvaluate } from "@/app/actions/interview";
 import { PHASE_CONFIG, PHASES_ORDER, type InterviewPhase } from "@/data/prompts";
 import type { Situation } from "@/data/situations";
 import { Button } from "@/components/ui/button";
@@ -22,30 +24,19 @@ type Props = {
   situation: Situation;
 };
 
-/** AI SDKのText Stream形式を読み取る */
-async function streamFromAPI(
-  body: Record<string, unknown>,
-  onChunk: (text: string) => void,
-  onDone: () => void
-) {
-  const res = await fetch("/api/interview", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  const reader = res.body?.getReader();
-  if (!reader) return;
-
-  const decoder = new TextDecoder();
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const text = decoder.decode(value, { stream: true });
-    if (text) onChunk(text);
+/** Server ActionのstreamableValueを読んでコールバックに渡す */
+async function consumeStream(
+  streamValue: Awaited<ReturnType<typeof chat>>["text"],
+  onUpdate: (accumulated: string) => void
+): Promise<string> {
+  let accumulated = "";
+  for await (const chunk of readStreamableValue(streamValue)) {
+    if (chunk) {
+      accumulated = chunk;
+      onUpdate(accumulated);
+    }
   }
-  onDone();
+  return accumulated;
 }
 
 export default function InterviewChat({
@@ -78,35 +69,20 @@ export default function InterviewChat({
 
   // フェーズ開始時の面接官の最初の発言
   const startPhase = useCallback(
-    (phase: InterviewPhase) => {
+    async (phase: InterviewPhase) => {
       setStreaming(true);
       setStreamingText("");
-      let accumulated = "";
 
-      streamFromAPI(
-        {
-          action: "chat",
-          phase,
-          companyType,
-          companySize,
-          situation,
-          messages: [],
-        },
-        (text) => {
-          accumulated += text;
-          setStreamingText(accumulated);
-        },
-        () => {
-          setMessages([{ role: "assistant", content: accumulated }]);
-          setStreamingText("");
-          setStreaming(false);
-          setState({
-            status: "interviewing",
-            phase,
-            questionIndex: 1,
-          });
-        }
-      );
+      const { text } = await chat(phase, companyType, companySize, situation, []);
+
+      const finalText = await consumeStream(text, (accumulated) => {
+        setStreamingText(accumulated);
+      });
+
+      setMessages([{ role: "assistant", content: finalText }]);
+      setStreamingText("");
+      setStreaming(false);
+      setState({ status: "interviewing", phase, questionIndex: 1 });
     },
     [companyType, companySize, situation]
   );
@@ -132,66 +108,37 @@ export default function InterviewChat({
     const { phase, questionIndex } = state;
     const config = PHASE_CONFIG[phase];
 
-    let accumulated = "";
+    const { text } = await chat(
+      phase,
+      companyType,
+      companySize,
+      situation,
+      newMessages
+    );
+
+    const finalText = await consumeStream(text, (accumulated) => {
+      setStreamingText(accumulated);
+    });
+
+    const updatedMessages = [
+      ...newMessages,
+      { role: "assistant" as const, content: finalText },
+    ];
+    setMessages(updatedMessages);
+    setStreamingText("");
+    setStreaming(false);
 
     // 最後の質問への回答後 → 評価へ
     if (questionIndex >= config.questionsCount) {
-      streamFromAPI(
-        {
-          action: "chat",
-          phase,
-          companyType,
-          companySize,
-          situation,
-          messages: newMessages,
-        },
-        (text) => {
-          accumulated += text;
-          setStreamingText(accumulated);
-        },
-        () => {
-          const finalMessages = [
-            ...newMessages,
-            { role: "assistant" as const, content: accumulated },
-          ];
-          setMessages(finalMessages);
-          setStreamingText("");
-          setStreaming(false);
-          setAllMessages((prev) => ({ ...prev, [phase]: finalMessages }));
-          setState({ status: "evaluating", phase });
-        }
-      );
-      return;
-    }
-
-    // 通常の質問続行
-    streamFromAPI(
-      {
-        action: "chat",
+      setAllMessages((prev) => ({ ...prev, [phase]: updatedMessages }));
+      setState({ status: "evaluating", phase });
+    } else {
+      setState({
+        status: "interviewing",
         phase,
-        companyType,
-        companySize,
-        situation,
-        messages: newMessages,
-      },
-      (text) => {
-        accumulated += text;
-        setStreamingText(accumulated);
-      },
-      () => {
-        setMessages([
-          ...newMessages,
-          { role: "assistant", content: accumulated },
-        ]);
-        setStreamingText("");
-        setStreaming(false);
-        setState({
-          status: "interviewing",
-          phase,
-          questionIndex: questionIndex + 1,
-        });
-      }
-    );
+        questionIndex: questionIndex + 1,
+      });
+    }
   };
 
   // 評価実行
@@ -200,29 +147,27 @@ export default function InterviewChat({
 
     const { phase } = state;
     const phaseMessages = allMessages[phase] ?? messages;
-    setStreaming(true);
-    setStreamingText("");
-    let accumulated = "";
 
-    streamFromAPI(
-      {
-        action: "evaluate",
+    (async () => {
+      setStreaming(true);
+      setStreamingText("");
+
+      const { text } = await evaluate(
         phase,
         companyType,
         companySize,
         situation,
-        messages: phaseMessages,
-      },
-      (text) => {
-        accumulated += text;
+        phaseMessages
+      );
+
+      const finalText = await consumeStream(text, (accumulated) => {
         setStreamingText(accumulated);
-      },
-      () => {
-        setStreamingText("");
-        setStreaming(false);
-        setState({ status: "phase-result", phase, evaluation: accumulated });
-      }
-    );
+      });
+
+      setStreamingText("");
+      setStreaming(false);
+      setState({ status: "phase-result", phase, evaluation: finalText });
+    })();
   }, [state, allMessages, messages, companyType, companySize, situation]);
 
   // 次のフェーズへ or 最終評価へ
@@ -243,30 +188,25 @@ export default function InterviewChat({
   useEffect(() => {
     if (state.status !== "final-evaluating") return;
 
-    setStreaming(true);
-    setStreamingText("");
-    let accumulated = "";
+    (async () => {
+      setStreaming(true);
+      setStreamingText("");
 
-    streamFromAPI(
-      {
-        action: "final-evaluate",
-        phase: "final",
+      const { text } = await finalEvaluate(
         companyType,
         companySize,
         situation,
-        messages: [],
-        allMessages,
-      },
-      (text) => {
-        accumulated += text;
+        allMessages
+      );
+
+      const finalText = await consumeStream(text, (accumulated) => {
         setStreamingText(accumulated);
-      },
-      () => {
-        setStreamingText("");
-        setStreaming(false);
-        setState({ status: "complete", finalEvaluation: accumulated });
-      }
-    );
+      });
+
+      setStreamingText("");
+      setStreaming(false);
+      setState({ status: "complete", finalEvaluation: finalText });
+    })();
   }, [state, allMessages, companyType, companySize, situation]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
