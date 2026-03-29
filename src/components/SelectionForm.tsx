@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import {
   COMPANY_TYPES,
   type CompanyTypeId,
   type CompanySizeId,
 } from "@/types/interview";
+import { generateSituation, type Situation } from "@/data/situations";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -22,10 +23,17 @@ export default function SelectionForm() {
   const [step, setStep] = useState<"type" | "size" | "confirm">("type");
   const [companyType, setCompanyType] = useState<CompanyTypeId | null>(null);
   const [companySize, setCompanySize] = useState<CompanySizeId | null>(null);
+  const [situation, setSituation] = useState<Situation | null>(null);
 
   const selectedType = COMPANY_TYPES.find((t) => t.id === companyType);
   const selectedSize = selectedType?.sizes.find((s) => s.id === companySize);
   const currentIndex = STEPS.indexOf(step);
+
+  const handleShuffle = useCallback(() => {
+    if (companyType) {
+      setSituation(generateSituation(companyType));
+    }
+  }, [companyType]);
 
   return (
     <div className="w-full max-w-2xl mx-auto px-4">
@@ -74,6 +82,7 @@ export default function SelectionForm() {
                 onClick={() => {
                   setCompanyType(type.id);
                   setCompanySize(null);
+                  setSituation(null);
                   setStep("size");
                 }}
               >
@@ -106,6 +115,7 @@ export default function SelectionForm() {
                 className="cursor-pointer text-center transition-all hover:border-violet-300 hover:shadow-lg hover:shadow-violet-100/50 hover:-translate-y-0.5 active:translate-y-0"
                 onClick={() => {
                   setCompanySize(size.id);
+                  setSituation(generateSituation(selectedType.id));
                   setStep("confirm");
                 }}
               >
@@ -129,13 +139,15 @@ export default function SelectionForm() {
       )}
 
       {/* Step 3: 確認 */}
-      {step === "confirm" && selectedType && selectedSize && (
+      {step === "confirm" && selectedType && selectedSize && situation && (
         <div className="text-center">
           <h2 className="text-2xl font-extrabold mb-2">準備OK？ ✨</h2>
           <p className="text-muted-foreground text-sm mb-8">
             この内容で面接スタート！
           </p>
-          <Card className="inline-flex flex-col mb-8">
+
+          {/* 会社タイプ・規模感 */}
+          <Card className="inline-flex flex-col mb-4">
             <CardContent className="flex flex-col gap-4 pt-2">
               <div className="flex items-center gap-4">
                 <span className="text-3xl">{selectedType.emoji}</span>
@@ -160,6 +172,46 @@ export default function SelectionForm() {
               </div>
             </CardContent>
           </Card>
+
+          {/* シチュエーション */}
+          <Card className="inline-flex flex-col mb-8 text-left">
+            <CardHeader className="pb-0">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">
+                  今回のシチュエーション
+                </CardTitle>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleShuffle}
+                  className="text-muted-foreground hover:text-pink-500"
+                >
+                  🔀 シャッフル
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <div>
+                <div className="text-xs font-bold text-orange-400 mb-0.5">
+                  事業内容
+                </div>
+                <div className="text-sm">{situation.business}</div>
+              </div>
+              <div>
+                <div className="text-xs font-bold text-pink-400 mb-0.5">
+                  募集背景
+                </div>
+                <div className="text-sm">{situation.hiringReason}</div>
+              </div>
+              <div>
+                <div className="text-xs font-bold text-violet-400 mb-0.5">
+                  求める人材像
+                </div>
+                <div className="text-sm">{situation.desiredTrait}</div>
+              </div>
+            </CardContent>
+          </Card>
+
           <div>
             <Button
               size="lg"
